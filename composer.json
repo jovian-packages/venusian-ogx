@@ -1,0 +1,109 @@
+{
+    "name": "jovian/venusian-ogx",
+    "description": "OpenGL composition layer for Venusian Surface GPU drawing — macOS and Linux",
+    "type": "library",
+    "version": "0.8.0",
+    "keywords": [
+        "framework",
+        "venusian",
+        "opengl",
+        "gles",
+        "gpu",
+        "macos",
+        "linux"
+    ],
+    "license": "MIT",
+    "homepage": "https://venusian.projectsaturnstudios.com/ecosystem/jovian/ogx/0.8.x/overview",
+    "support": {
+        "docs": "https://venusian.projectsaturnstudios.com/ecosystem/jovian/ogx/0.8.x/overview",
+        "issues": "https://github.com/jovian/venusian-ogx/issues",
+        "source": "https://github.com/jovian/venusian-ogx"
+    },
+    "authors": [
+        {
+            "name": "Angel Gonzalez",
+            "email": "angel@projectsaturnstudios.com"
+        }
+    ],
+    "require": {
+        "php": "^8.4|^8.5|^8.6",
+        "jovian/ogx": "^0.8.0",
+        "surface/contracts": "^0.8.0",
+        "surface/drawing": "^0.8.0",
+        "venusian/surface": "^0.8.0",
+        "venusian-voyager/contracts": "^0.8.0",
+        "venusian-voyager/nuts-and-bolts": "^0.8.0"
+    },
+    "require-dev": {
+        "pestphp/pest": "^4"
+    },
+    "autoload": {
+        "psr-4": {
+            "Jovian\\Venusian\\OpenGL\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Venusian\\Tests\\": "tests/"
+        }
+    },
+    "repositories": [
+        {
+            "type": "path",
+            "url": "../ogx"
+        },
+        {
+            "type": "path",
+            "url": "../../venusian/surface"
+        },
+        {
+            "type": "path",
+            "url": "../../venusian/framework/src/Voyager/Contracts",
+            "options": {
+                "symlink": true,
+                "versions": {
+                    "venusian-voyager/contracts": "0.8.4"
+                }
+            }
+        },
+        {
+            "type": "path",
+            "url": "../../venusian/framework/src/Voyager/NutsAndBolts",
+            "options": {
+                "symlink": true,
+                "versions": {
+                    "venusian-voyager/nuts-and-bolts": "0.8.4"
+                }
+            }
+        },
+        {
+            "type": "path",
+            "url": "../../venusian/framework/src/Voyager/IOPools",
+            "options": {
+                "symlink": true,
+                "versions": {
+                    "venusian-voyager/io-pools": "0.8.4"
+                }
+            }
+        }
+    ],
+    "config": {
+        "sort-packages": true,
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        }
+    },
+    "extra": {
+        "branch-alias": {
+            "dev-master": "0.8.x-dev"
+        },
+        "venusian": {
+            "providers": [
+                "Jovian\\Venusian\\OpenGL\\Providers\\VenusianOpenGLServiceProvider"
+            ],
+            "aliases": {}
+        }
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}
