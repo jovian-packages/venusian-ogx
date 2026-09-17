@@ -95,7 +95,7 @@
     },
     "extra": {
         "branch-alias": {
-            "dev-master": "0.8.x-dev"
+            "dev-main": "0.8.x-dev"
         },
         "venusian": {
             "providers": [
