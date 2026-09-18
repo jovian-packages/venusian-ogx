@@ -28,9 +28,8 @@
     "require": {
         "php": "^8.4|^8.5|^8.6",
         "jovian/ogx": "^0.8.0",
-        "surface/contracts": "^0.8.0",
-        "surface/drawing": "^0.8.0",
-        "venusian/surface": "^0.8.0",
+        "venusian-surface/contracts": "^0.8.0",
+        "venusian-surface/drawing": "^0.8.0",
         "venusian-voyager/contracts": "^0.8.0",
         "venusian-voyager/nuts-and-bolts": "^0.8.0"
     },
