@@ -1,23 +1,21 @@
 {
-    "name": "jovian/venusian-ogx",
-    "description": "OpenGL composition layer for Venusian Surface GPU drawing — macOS and Linux",
+    "name": "jovian/venusian-opengl",
+    "description": "The 'opengl' rendering engine for Venusian Surface: a GpuDevice over ext-opengl that draws Surface's draw lists in an OpenGL 4.1 core or OpenGL ES 3.1 context, its own offscreen or one a canvas lends.",
     "type": "library",
-    "version": "0.8.0",
     "keywords": [
         "framework",
         "venusian",
-        "opengl",
-        "gles",
+        "surface",
+        "drawing",
         "gpu",
-        "macos",
-        "linux"
+        "opengl",
+        "opengl-es"
     ],
     "license": "MIT",
-    "homepage": "https://venusian.projectsaturnstudios.com/ecosystem/jovian/ogx/0.8.x/overview",
+    "homepage": "https://venusian.projectsaturnstudios.com/ecosystem/jovian/venusian-opengl/0.10.x",
     "support": {
-        "docs": "https://venusian.projectsaturnstudios.com/ecosystem/jovian/ogx/0.8.x/overview",
-        "issues": "https://github.com/jovian/venusian-ogx/issues",
-        "source": "https://github.com/jovian/venusian-ogx"
+        "issues": "https://github.com/jovian-packages/venusian-opengl/issues",
+        "source": "https://github.com/jovian-packages/venusian-opengl"
     },
     "authors": [
         {
@@ -27,65 +25,26 @@
     ],
     "require": {
         "php": "^8.4|^8.5|^8.6",
-        "jovian/ogx": "^0.8.0",
-        "venusian-surface/contracts": "^0.8.0",
-        "venusian-surface/drawing": "^0.8.0",
-        "venusian-voyager/contracts": "^0.8.0",
-        "venusian-voyager/nuts-and-bolts": "^0.8.0"
+        "ext-opengl": "^0.10",
+        "venusian-surface/contracts": "^0.10.0",
+        "venusian-surface/drawing": "^0.10.0",
+        "venusian-surface/framebuffers": "^0.10.0",
+        "venusian-voyager/nuts-and-bolts": "^0.10.1"
     },
     "require-dev": {
-        "pestphp/pest": "^4"
+        "pestphp/pest": "^4",
+        "venusian-surface/fonts": "^0.10.0"
     },
     "autoload": {
         "psr-4": {
-            "Jovian\\Venusian\\OpenGL\\": "src/"
+            "Jovian\\Engines\\OpenGL\\": "src/"
         }
     },
     "autoload-dev": {
         "psr-4": {
-            "Venusian\\Tests\\": "tests/"
+            "Jovian\\Engines\\OpenGL\\Tests\\": "tests/"
         }
     },
-    "repositories": [
-        {
-            "type": "path",
-            "url": "../ogx"
-        },
-        {
-            "type": "path",
-            "url": "../../venusian/surface"
-        },
-        {
-            "type": "path",
-            "url": "../../venusian/framework/src/Voyager/Contracts",
-            "options": {
-                "symlink": true,
-                "versions": {
-                    "venusian-voyager/contracts": "0.8.4"
-                }
-            }
-        },
-        {
-            "type": "path",
-            "url": "../../venusian/framework/src/Voyager/NutsAndBolts",
-            "options": {
-                "symlink": true,
-                "versions": {
-                    "venusian-voyager/nuts-and-bolts": "0.8.4"
-                }
-            }
-        },
-        {
-            "type": "path",
-            "url": "../../venusian/framework/src/Voyager/IOPools",
-            "options": {
-                "symlink": true,
-                "versions": {
-                    "venusian-voyager/io-pools": "0.8.4"
-                }
-            }
-        }
-    ],
     "config": {
         "sort-packages": true,
         "allow-plugins": {
@@ -94,13 +53,12 @@
     },
     "extra": {
         "branch-alias": {
-            "dev-main": "0.8.x-dev"
+            "dev-main": "0.10.x-dev"
         },
         "venusian": {
             "providers": [
-                "Jovian\\Venusian\\OpenGL\\Providers\\VenusianOpenGLServiceProvider"
-            ],
-            "aliases": {}
+                "Jovian\\Engines\\OpenGL\\Providers\\VenusianOpenGLServiceProvider"
+            ]
         }
     },
     "minimum-stability": "dev",

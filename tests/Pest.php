@@ -2,175 +2,103 @@
 
 declare(strict_types=1);
 
-/*
-| Pest bootstrap for jovian/venusian-ogx.
-|
-| Extension-dependent suites skip when ext-opengl is absent. A skipped test
-| is not evidence the GL path works — run those on the Mac (CGL) or the Pi
-| (EGL surfaceless) with the extension loaded.
-*/
+use Jovian\Engines\OpenGL\OpenGLDevice;
+use Surface\Contracts\Rasterize\Edges;
+use Surface\Drawing\DrawingManager;
+use Surface\Drawing\Gpu\GpuRenderingEngine;
+use Surface\Framebuffers\FramebufferManager;
+use Surface\Rasterize\RasterizeManager;
 
-use Jovian\Bindings\OpenGL\CGL\CGL;
-use Jovian\Bindings\OpenGL\EGL\EGL;
-use Jovian\Bindings\OpenGL\Enums\CGL\CGLError;
-use Jovian\Bindings\OpenGL\Enums\CGL\CGLOpenGLProfile;
-use Jovian\Bindings\OpenGL\Enums\CGL\CGLPixelFormatAttribute;
-use Jovian\Bindings\OpenGL\Enums\EGL\EGLVersion10;
-use Jovian\Bindings\OpenGL\Enums\EGL\EGLVersion12;
-use Jovian\Bindings\OpenGL\Enums\EGL\EGLVersion14;
-use Jovian\Bindings\OpenGL\Enums\EGL\EGLVersion15;
-use Jovian\Bindings\OpenGL\Runtime\Bridge;
-
-function oglExtensionLoaded(): bool
-{
-    return extension_loaded('opengl');
+if (! extension_loaded('opengl')) {
+    throw new RuntimeException('venusian-opengl tests need ext-opengl loaded.');
 }
 
-/** Mesa's surfaceless platform (EGL_PLATFORM_SURFACELESS_MESA): not EGL core, so in no enum. */
-function oglSurfacelessPlatform(): int
+const OPENGL_MAC = PHP_OS_FAMILY === 'Darwin';
+
+// The parity suite every engine runs lives in the Surface checkout (export-ignored from its package).
+$parity = (getenv('SURFACE_TESTS') ?: dirname(__DIR__, 3).'/venusian/surface/tests').'/Support/GpuParity/GpuParity.php';
+if (! is_file($parity)) {
+    throw new RuntimeException("The GPU parity suite was not found at {$parity}: set SURFACE_TESTS to a Surface checkout's tests directory.");
+}
+require_once $parity;
+
+/** An OpenGL engine with no output, over its own offscreen context. */
+function openglEngine(int $width = 64, int $height = 32, Edges $edges = Edges::ANTIALIASED): GpuRenderingEngine
 {
-    return 0x31DD;
+    return new GpuRenderingEngine(new OpenGLDevice, $width, $height, $edges);
 }
 
-function oglRequireExtension(): void
+/** The RGBA8 pixel at ($x, $y) of a tightly packed frame, as hex. */
+function pixelOf(string $rgba8, int $width, int $x, int $y): string
 {
-    if (! oglExtensionLoaded()) {
-        test()->skip('ext-opengl is not loaded');
-    }
+    return bin2hex(substr($rgba8, ($y * $width + $x) * 4, 4));
+}
+
+/** A config repository over an array, as Surface's own suite builds one. */
+function openglConfig(array $items): object
+{
+    return new class($items)
+    {
+        public function __construct(private readonly array $items) {}
+
+        public function get(string $key, mixed $default = null): mixed
+        {
+            return $this->items[$key] ?? $default;
+        }
+    };
+}
+
+/** A drawing manager without a container: Velvet registered, nothing else. */
+function openglDrawing(): DrawingManager
+{
+    $framebuffers = new class extends FramebufferManager
+    {
+        public function __construct()
+        {
+            $this->config = openglConfig([]);
+        }
+    };
+    $rasterize = new class extends RasterizeManager
+    {
+        public function __construct()
+        {
+            $this->config = openglConfig([]);
+        }
+    };
+
+    return new DrawingManager(openglConfig([]), $framebuffers, $rasterize);
 }
 
 /**
- * A current, headless, core-profile GL context — created once per process.
- * CGL on Darwin, EGL surfaceless on Linux. The only platform branch in the suite.
- *
- * @return array{api: string, handle: int}
+ * The process's memory now, in MB, GPU allocations included: macOS's
+ * phys_footprint (private GPU textures count there, not in RSS); on Linux
+ * VmRSS plus each DRM client's drm-total-* (V3D's buffers are not in VmRSS).
  */
-function oglContext(): array
+function residentMb(): float
 {
-    static $context = null;
-    static $failed = null;
+    if (PHP_OS_FAMILY === 'Darwin') {
+        preg_match('/phys_footprint:\s+([\d.]+)\s+(KB|MB|GB)/', (string) shell_exec('footprint -p '.getmypid().' 2>/dev/null'), $m)
+            || throw new RuntimeException('footprint gave no phys_footprint for this process.');
 
-    oglRequireExtension();
-
-    if (! is_null($failed)) {
-        test()->skip($failed);
+        return (float) $m[1] * ['KB' => 1 / 1024, 'MB' => 1, 'GB' => 1024][$m[2]];
     }
-    if (! is_null($context)) {
-        return $context;
+    preg_match('/^VmRSS:\s+(\d+) kB/m', (string) file_get_contents('/proc/self/status'), $m)
+        || throw new RuntimeException('/proc/self/status gave no VmRSS.');
+    $kib = (int) $m[1];
+    $clients = [];
+    // An fd can close between the listing and the read: that entry is skipped, not reported.
+    set_error_handler(fn (): bool => true);
+    try {
+        $infos = array_map(fn (string $fdinfo): string => (string) file_get_contents($fdinfo), glob('/proc/self/fdinfo/*') ?: []);
+    } finally {
+        restore_error_handler();
     }
-    if (! Bridge::load()) {
-        $failed = 'Bridge::load() could not open an OpenGL library';
-        test()->skip($failed);
-    }
-
-    $context = PHP_OS_FAMILY === 'Darwin' ? oglCglContext() : oglEglContext();
-    if (is_null($context)) {
-        $failed = 'no headless core-profile context on this box';
-        test()->skip($failed);
-    }
-
-    Bridge::load();
-
-    return $context;
-}
-
-/** @return array{api: string, handle: int}|null */
-function oglCglContext(): ?array
-{
-    foreach ([CGLOpenGLProfile::CGLOGLP_VERSION_GL4_CORE, CGLOpenGLProfile::CGLOGLP_VERSION_3_2_CORE] as $profile) {
-        $attribs = oglIntBuffer([
-            CGLPixelFormatAttribute::CGLPFA_OPEN_GL_PROFILE->value, $profile->value,
-            CGLPixelFormatAttribute::CGLPFA_ACCELERATED->value,
-            0,
-        ]);
-        $pixOut = oglBuffer(8);
-        $nOut = oglBuffer(4);
-        if (CGL::CGLChoosePixelFormat($attribs, $pixOut, $nOut) !== CGLError::CGL_NO_ERROR->value) {
-            continue;
+    foreach ($infos as $info) {
+        if (preg_match('/^drm-client-id:\s+(\d+)/m', $info, $client) && ! isset($clients[$client[1]])) {
+            preg_match_all('/^drm-total-\S+:\s+(\d+) KiB/m', $info, $totals);
+            $clients[$client[1]] = array_sum(array_map('intval', $totals[1]));
         }
-        $pix = oglReadPtr($pixOut);
-        if ($pix === 0) {
-            continue;
-        }
-        $ctxOut = oglBuffer(8);
-        if (CGL::CGLCreateContext($pix, 0, $ctxOut) !== CGLError::CGL_NO_ERROR->value) {
-            continue;
-        }
-        $ctx = oglReadPtr($ctxOut);
-        if ($ctx === 0 || CGL::CGLSetCurrentContext($ctx) !== CGLError::CGL_NO_ERROR->value) {
-            continue;
-        }
-
-        return ['api' => 'CGL', 'handle' => $ctx];
     }
 
-    return null;
-}
-
-/** @return array{api: string, handle: int}|null */
-function oglEglContext(): ?array
-{
-    $none = EGLVersion10::FALSE->value;
-    $dpy = EGL::eglGetPlatformDisplay(oglSurfacelessPlatform(), EGLVersion14::DEFAULT_DISPLAY->value, 0);
-    if ($dpy === 0) {
-        return null;
-    }
-    $majOut = oglBuffer(4);
-    $minOut = oglBuffer(4);
-    if (! EGL::eglInitialize($dpy, $majOut, $minOut) || ! EGL::eglBindAPI(EGLVersion14::OPENGL_API->value)) {
-        return null;
-    }
-    $configAttribs = oglIntBuffer([
-        EGLVersion10::SURFACE_TYPE->value, EGLVersion10::PBUFFER_BIT->value,
-        EGLVersion12::RENDERABLE_TYPE->value, EGLVersion14::OPENGL_BIT->value,
-        EGLVersion10::NONE->value,
-    ]);
-    $configOut = oglBuffer(8);
-    $nOut = oglBuffer(4);
-    if (! EGL::eglChooseConfig($dpy, $configAttribs, $configOut, 1, $nOut) || oglReadInt($nOut) < 1) {
-        return null;
-    }
-    $contextAttribs = oglIntBuffer([
-        EGLVersion15::CONTEXT_MAJOR_VERSION->value, 3,
-        EGLVersion15::CONTEXT_MINOR_VERSION->value, 1,
-        EGLVersion15::CONTEXT_OPENGL_PROFILE_MASK->value, EGLVersion15::CONTEXT_OPENGL_CORE_PROFILE_BIT->value,
-        EGLVersion10::NONE->value,
-    ]);
-    $ctx = EGL::eglCreateContext($dpy, oglReadPtr($configOut), $none, $contextAttribs);
-    if ($ctx === 0 || ! EGL::eglMakeCurrent($dpy, $none, $none, $ctx)) {
-        return null;
-    }
-
-    return ['api' => 'EGL', 'handle' => $ctx];
-}
-
-function oglBuffer(int $bytes): int
-{
-    $ptr = Bridge::alloc($bytes);
-    expect($ptr)->not->toBe(0);
-
-    return $ptr;
-}
-
-/** @param list<int> $values */
-function oglIntBuffer(array $values): int
-{
-    $bytes = '';
-    foreach ($values as $value) {
-        $bytes .= pack('l', $value);
-    }
-    $ptr = oglBuffer(max(4, strlen($bytes)));
-    Bridge::write($ptr, 0, $bytes);
-
-    return $ptr;
-}
-
-function oglReadInt(int $ptr, int $offset = 0): int
-{
-    return unpack('l', (string) Bridge::read($ptr, $offset, 4))[1];
-}
-
-function oglReadPtr(int $ptr, int $offset = 0): int
-{
-    return unpack('P', (string) Bridge::read($ptr, $offset, 8))[1];
+    return ($kib + array_sum($clients)) / 1024;
 }
