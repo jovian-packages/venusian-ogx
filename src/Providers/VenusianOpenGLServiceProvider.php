@@ -3,6 +3,8 @@
 namespace Jovian\Engines\OpenGL\Providers;
 
 use Jovian\Engines\OpenGL\OpenGLDevice;
+use Surface\Contracts\Drawing\ColorSpace;
+use Surface\Contracts\Drawing\TargetFormat;
 use Surface\Contracts\Drawing\WindowOutput;
 use Surface\Drawing\DrawingManager;
 use Surface\Drawing\Gpu\GpuRenderingEngine;
@@ -43,7 +45,11 @@ class VenusianOpenGLServiceProvider extends ServiceProvider
         $output = $args['output'] ?? null;
         // A window that lends no GL context is refused by the engine before adopt(): nothing is made for it.
         if ($output instanceof WindowOutput) {
-            return OpenGLDevice::adopting();
+            // A colour space past sRGB needs the window's native handles: the device makes a surface in it itself.
+            $format = $args['format'] ?? TargetFormat::Rgba8;
+            $space = $args['colorspace'] ?? ($format instanceof TargetFormat ? $format->colorSpaces()[0] : ColorSpace::Srgb);
+
+            return OpenGLDevice::adopting($space instanceof ColorSpace ? $space : ColorSpace::Srgb);
         }
 
         return new OpenGLDevice;

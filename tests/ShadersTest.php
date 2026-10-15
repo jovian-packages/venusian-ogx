@@ -22,3 +22,11 @@ it('names the two dialect headers', function (): void {
         'es' => "#version 300 es\nprecision highp float;\nprecision highp int;\nprecision highp sampler2D;\n",
     ]);
 });
+
+it('ships the show pass for both dialects', function (): void {
+    foreach (['show.vert.glsl', 'show.frag.glsl'] as $file) {
+        $source = file_get_contents(dirname(OpenGLDevice::VERTEX_SHADER).'/'.$file);
+        expect($source)->not->toContain('#version');
+    }
+    expect(file_get_contents(dirname(OpenGLDevice::VERTEX_SHADER).'/show.vert.glsl'))->toContain('gl_VertexID');
+});

@@ -3,8 +3,10 @@
 namespace Jovian\Engines\OpenGL;
 
 use Surface\Contracts\Drawing\DrawingException;
+use Surface\Contracts\Framebuffers\HdrReadback;
 use Surface\Contracts\Framebuffers\Region;
 use Surface\Framebuffers\GLFramebuffer;
+use Surface\Framebuffers\HdrImage;
 
 /**
  * The opengl engine's framebuffer: the single-sample RGBA8 texture its device
@@ -12,9 +14,9 @@ use Surface\Framebuffers\GLFramebuffer;
  * run bottom-up as GL has them; this class answers and takes them top-down as
  * every Surface framebuffer does.
  */
-final class OpenGLFramebuffer extends GLFramebuffer
+final class OpenGLFramebuffer extends GLFramebuffer implements HdrReadback
 {
-    public function __construct(private readonly OpenGLDevice $device, private readonly int $texture, private readonly int $w, private readonly int $h)
+    public function __construct(private readonly OpenGLDevice $device, private readonly int $texture, private readonly int $w, private readonly int $h, private readonly bool $hdr = false)
     {
         parent::__construct();
     }
@@ -50,8 +52,11 @@ final class OpenGLFramebuffer extends GLFramebuffer
     public function readRgba8(Region $region): string
     {
         $this->inside($region);
+        if (! $this->hdr) {
+            return $this->device->read($this->texture, $region);
+        }
 
-        return $this->device->read($this->texture, $region);
+        return HdrImage::fromRgba16f($this->readRgba16f($region), $region->width, $region->height)->toRgba8();
     }
 
     public function uploadRgba8(string $rgba8, Region $region): void
@@ -61,7 +66,22 @@ final class OpenGLFramebuffer extends GLFramebuffer
         if (strlen($rgba8) !== $size) {
             throw new DrawingException('opengl: '.strlen($rgba8)." bytes do not fill a {$region->width} × {$region->height} region ({$size} bytes).");
         }
-        $this->device->write($this->texture, $rgba8, $region);
+        if (! $this->hdr) {
+            $this->device->write($this->texture, $rgba8, $region);
+
+            return;
+        }
+        $this->device->write($this->texture, LinearHalves::fromRgba8($rgba8, $region->width, $region->height), $region, true);
+    }
+
+    public function readRgba16f(Region $region): string
+    {
+        $this->inside($region);
+        if (! $this->hdr) {
+            return LinearHalves::fromRgba8($this->device->read($this->texture, $region), $region->width, $region->height);
+        }
+
+        return $this->device->read($this->texture, $region, true);
     }
 
     /** GL reads and writes whatever region it is given: anything past the texture is refused here. */

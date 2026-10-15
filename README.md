@@ -58,6 +58,17 @@ $engine = app('drawing')->renderer('opengl', ['output' => $canvas]);
 
 Before a canvas lends `gl-context`, the refusal reads `This window cannot host 'opengl': it lends … It can host: …`.
 
+## Presenting and HDR
+
+Present = show pass into bound framebuffer: `presentRect()`, window's filter, black bars, encoded. Host's GL context = SDR only (host picks pixel format). HDR / P3: make engine on a GLFW or SDL3 staged window with `format` / `colorspace` → device gets native window (`'native'` handle, lend carries `'context' => 0`), makes own surface:
+
+- macOS: NSOpenGLContext, half floats, EDR view, extended-linear window colour space (HDR10 shown through EDR: no PQ GL surface on macOS); needs ext-appkit.
+- Linux: EGL window surface in `EGL_GL_COLORSPACE` (scRGB linear half floats, BT.2020 PQ 10-bit + SMPTE 2086 / CTA 861.3 metadata, Display P3) where the display lists the extension; else refused naming it. Wayland swaps at interval 0. Pi 5 Mesa lists none (measured): refused there.
+
+    $engine = $drawing->engine('opengl', ['output' => $stagedWindow, 'format' => TargetFormat::Rgba16Float]);
+
+Offscreen device draws every pair (readback, `hdrSnapshot()`).
+
 ## What it draws
 
 | Operation | Draws |

@@ -35,6 +35,9 @@
         "pestphp/pest": "^4",
         "venusian-surface/fonts": "^0.10.0"
     },
+    "suggest": {
+        "ext-appkit": "HDR and Display P3 on macOS: the device's own EDR OpenGL surface on a staged window's view."
+    },
     "autoload": {
         "psr-4": {
             "Jovian\\Engines\\OpenGL\\": "src/"

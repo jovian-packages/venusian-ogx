@@ -7,6 +7,8 @@ use Surface\Contracts\Drawing\DrawingException;
 use Surface\Contracts\Drawing\LentSurface;
 use Surface\Contracts\Drawing\RenderingEngine;
 use Surface\Contracts\Drawing\SurfaceKind;
+use Surface\Contracts\Windows\ScaleFilter;
+use Surface\Contracts\Windows\ScaleFit;
 use Surface\Drawing\Gpu\GpuRenderingEngine;
 use Surface\NutsAndBolts\Color;
 
@@ -17,26 +19,6 @@ use Surface\NutsAndBolts\Color;
  */
 
 /** A context like a canvas would lend, made current; its handles as a LentSurface would carry them. */
-function lentContext(int $width = 32, int $height = 16): LentSurface
-{
-    if (OPENGL_MAC) {
-        CGLChoosePixelFormat([kCGLPFAOpenGLProfile, kCGLOGLPVersion_GL4_Core, kCGLPFAAccelerated, kCGLPFAColorSize, 24, kCGLPFAAlphaSize, 8, 0], $pixelFormat, $count);
-        CGLCreateContext($pixelFormat, null, $context);
-        CGLDestroyPixelFormat($pixelFormat);
-        CGLSetCurrentContext($context);
-
-        return new LentSurface(SurfaceKind::GL_CONTEXT, ['context' => $context->pointer()], fn (): array => [$width, $height]);
-    }
-    $display = eglGetPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, null);
-    eglInitialize($display, $major, $minor);
-    eglBindAPI(EGL_OPENGL_ES_API);
-    eglChooseConfig($display, [EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT, EGL_SURFACE_TYPE, EGL_PBUFFER_BIT, EGL_NONE], $configs, 1, $count);
-    $context = eglCreateContext($display, $configs[0], null, [EGL_CONTEXT_MAJOR_VERSION, 3, EGL_CONTEXT_MINOR_VERSION, 1, EGL_NONE]);
-    eglMakeCurrent($display, null, null, $context);
-
-    return new LentSurface(SurfaceKind::GL_CONTEXT, ['context' => $context->pointer(), 'display' => $display->pointer()], fn (): array => [$width, $height]);
-}
-
 it('has no dialect or target before a context is adopted', function (): void {
     $device = OpenGLDevice::adopting();
 
@@ -59,6 +41,8 @@ it('adopts a lent context and draws in it', function (): void {
 
 it('copies into the framebuffer bound for drawing at the surface\'s size, and leaves it bound', function (): void {
     $surface = lentContext(32, 16);
+    // Doubled texel for texel; the surface's default filter (Linear) would blend the edge row.
+    $surface->changeScaling(ScaleFilter::Nearest, ScaleFit::Stretch);
     $device = OpenGLDevice::adopting();
     $device->adopt($surface);
     $engine = new GpuRenderingEngine($device, 16, 8);
@@ -281,3 +265,66 @@ it('frees its objects in the lent context when the canvas releases the surface',
         ->and(fn () => $device->target(8, 8, 1))->toThrow(DrawingException::class, 'opengl: this device was released.')
         ->and(fn () => $framebuffer->toRgba8())->toThrow(DrawingException::class, 'opengl: this device was released.');
 });
+
+/** A $width × $height texture in a framebuffer, bound for drawing, cleared white: what a canvas binds before present(). @return array{int, int} framebuffer, texture */
+function boundView(int $width, int $height): array
+{
+    [$view] = glGenTextures(1);
+    glBindTexture(GL_TEXTURE_2D, $view);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, $width, $height, 0, GL_RGBA, GL_UNSIGNED_BYTE, null);
+    [$fbo] = glGenFramebuffers(1);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, $fbo);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, $view, 0);
+    glClearColor(1.0, 1.0, 1.0, 1.0);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    return [$fbo, $view];
+}
+
+/** The bound view read back top-down, as Surface reads frames. */
+function viewPixels(int $fbo, int $width, int $height): string
+{
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, $fbo);
+    $rows = glReadPixels(0, 0, $width, $height, GL_RGBA, GL_UNSIGNED_BYTE, null);
+
+    return implode('', array_reverse(str_split($rows, $width * 4)));
+}
+
+it('places a target of another size by the surface fit, the bars black', function (): void {
+    $surface = lentContext(32, 16);
+    $surface->changeScaling(ScaleFilter::Nearest, ScaleFit::Letterbox);
+    $device = OpenGLDevice::adopting();
+    $device->adopt($surface);
+    $engine = new GpuRenderingEngine($device, 8, 8);
+    $engine->frame(fn (RenderingEngine $g) => $g->clear(Color::rgb(255, 0, 0)));
+    [$fbo, $view] = boundView(32, 16);
+
+    $device->present($surface);
+    $pixels = viewPixels($fbo, 32, 16);
+
+    expect(pixelOf($pixels, 32, 2, 8))->toBe('000000ff')
+        ->and(pixelOf($pixels, 32, 16, 8))->toBe('ff0000ff')
+        ->and(pixelOf($pixels, 32, 29, 8))->toBe('000000ff')
+        ->and(glGetError())->toBe(GL_NO_ERROR)
+        ->and($device->transform())->toBe([0, 1.0, 203.0]);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers([$fbo]);
+    glDeleteTextures([$view]);
+});
+
+it('copies byte for byte at equal size, nearest or linear, rows the right way up', function (ScaleFilter $filter): void {
+    $surface = lentContext(4, 2);
+    $surface->changeScaling($filter, ScaleFit::Stretch);
+    $device = OpenGLDevice::adopting();
+    $device->adopt($surface);
+    $engine = new GpuRenderingEngine($device, 4, 2);
+    $engine->frame(fn (RenderingEngine $g) => $g->clear(Color::rgb(10, 20, 30))->fillRect(0, 0, 1, 1, Color::rgb(200, 100, 50))->fillRect(3, 1, 1, 1, Color::rgb(1, 2, 3)));
+    [$fbo, $view] = boundView(4, 2);
+
+    $device->present($surface);
+
+    expect(viewPixels($fbo, 4, 2))->toBe($engine->framebuffer()->toRgba8());
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers([$fbo]);
+    glDeleteTextures([$view]);
+})->with([ScaleFilter::Nearest, ScaleFilter::Linear]);

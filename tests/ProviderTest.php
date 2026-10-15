@@ -4,11 +4,13 @@ declare(strict_types=1);
 
 use Jovian\Engines\OpenGL\OpenGLDevice;
 use Jovian\Engines\OpenGL\Providers\VenusianOpenGLServiceProvider;
+use Surface\Contracts\Drawing\ColorSpace;
 use Surface\Contracts\Drawing\DrawingException;
 use Surface\Contracts\Drawing\LentSurface;
 use Surface\Contracts\Drawing\RenderingEngine;
 use Surface\Contracts\Drawing\SurfaceBorrower;
 use Surface\Contracts\Drawing\SurfaceKind;
+use Surface\Contracts\Drawing\TargetFormat;
 use Surface\Contracts\Drawing\WindowOutput;
 use Surface\Contracts\Framebuffers\FormatSpec;
 use Surface\Contracts\Framebuffers\Framebuffer;
@@ -36,7 +38,7 @@ it('refuses the Velvet-only arguments by name', function (): void {
     VenusianOpenGLServiceProvider::extend($drawing);
 
     $drawing->renderer('opengl', ['width' => 16, 'height' => 8, 'mode' => 'ring']);
-})->throws(DrawingException::class, "opengl does not take 'mode'. It takes: output, width, height, edges.");
+})->throws(DrawingException::class, "opengl does not take 'mode'. It takes: output, width, height, edges, format, colorspace, frames_in_flight, resolution.");
 
 /** An output that says it lends a GL context; deviceFor() reads nothing else of it. */
 final class ContextLendingOutput implements WindowOutput
@@ -100,3 +102,10 @@ it('builds no context for a window that lends none: the refusal comes before any
     expect(fn () => VenusianOpenGLServiceProvider::deviceFor(['output' => $canvas])->dialect())->toThrow(DrawingException::class, 'no context yet');
 });
 
+it('makes an adopting device that asks for a native window when a window engine wants a colour space past sRGB', function (): void {
+    $window = new ContextLendingOutput;
+
+    expect(VenusianOpenGLServiceProvider::deviceFor(['output' => $window])->handles())->toBe([])
+        ->and(VenusianOpenGLServiceProvider::deviceFor(['output' => $window, 'format' => TargetFormat::Rgba16Float])->handles())->toBe(['native' => 1])
+        ->and(VenusianOpenGLServiceProvider::deviceFor(['output' => $window, 'colorspace' => ColorSpace::DisplayP3])->handles())->toBe(['native' => 1]);
+});

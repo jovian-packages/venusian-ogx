@@ -6,7 +6,7 @@ out vec4 color;
 uniform sampler2D source;
 // ext-opengl sets no unsigned vectors: the two uvec4 arrive as floats holding
 // whole numbers 0..255 and are rebuilt at the top of main().
-uniform vec4 mode_opacity;    // mode, opacity, linear, 0
+uniform vec4 mode_opacity;    // mode, opacity, linear, flags (1 HDR target, 2 half-float source)
 uniform vec4 rgba_in;         // r, g, b, a
 uniform vec4 shape;           // cx, cy, rx, ry
 uniform vec4 band;            // stroke, hole, samples, 0
@@ -35,6 +35,12 @@ float ellipse(vec2 p, vec2 centre, vec2 radii, bool hard)
     return hard ? (d <= 0.0 ? 1.0 : 0.0) : clamp(0.5 - d, 0.0, 1.0);
 }
 
+// sRGB-encoded channels to linear light: what an HDR target holds, SDR white at 1.0.
+vec3 linear_light(vec3 c)
+{
+    return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c));
+}
+
 void main()
 {
     uvec4 mode_rgba[2];
@@ -43,13 +49,14 @@ void main()
     uint mode = mode_rgba[0].x;
     vec4 rgba = vec4(mode_rgba[1]) / 255.0;
     vec2 centre = floor(at) + 0.5;
+    bool hdr = (mode_rgba[0].w & 1u) != 0u;
 
     if (mode == SOLID) {
-        color = rgba;
+        color = hdr ? vec4(linear_light(rgba.rgb), rgba.a) : rgba;
         return;
     }
     if (mode == FILL) {
-        color = rgba;
+        color = hdr ? vec4(linear_light(rgba.rgb), rgba.a) : rgba;
         return;
     }
     if (mode == COPY) {
@@ -69,7 +76,7 @@ void main()
         if (coverage <= 0.0) {
             discard;
         }
-        color = vec4(rgba.rgb, shaped(mode_rgba[1].w, coverage));
+        color = vec4(hdr ? linear_light(rgba.rgb) : rgba.rgb, shaped(mode_rgba[1].w, coverage));
         return;
     }
 
@@ -80,6 +87,33 @@ void main()
     float h = efwh.w;
     if (!(u >= 0.0 && u < w && v >= 0.0 && v < h)) {
         discard;
+    }
+    if (hdr) {
+        // In floats: nearest, or bilinear weighed by alpha; sRGB decoded unless the source is half floats.
+        vec4 f;
+        if (mode_rgba[0].z == 0u) {
+            f = texelFetch(source, ivec2(int(floor(u)), int(floor(v))), 0);
+        } else {
+            vec2 p = vec2(u, v) - 0.5;
+            vec2 o = floor(p);
+            vec2 t = p - o;
+            ivec2 last = ivec2(int(w) - 1, int(h) - 1);
+            ivec2 lo = clamp(ivec2(o), ivec2(0), last);
+            ivec2 hi = clamp(ivec2(o) + 1, ivec2(0), last);
+            vec4 p00 = texelFetch(source, lo, 0);
+            vec4 p10 = texelFetch(source, ivec2(hi.x, lo.y), 0);
+            vec4 p01 = texelFetch(source, ivec2(lo.x, hi.y), 0);
+            vec4 p11 = texelFetch(source, hi, 0);
+            vec4 m = mix(mix(vec4(p00.rgb * p00.a, p00.a), vec4(p10.rgb * p10.a, p10.a), t.x),
+                         mix(vec4(p01.rgb * p01.a, p01.a), vec4(p11.rgb * p11.a, p11.a), t.x), t.y);
+            if (m.a <= 0.0) {
+                discard;
+            }
+            f = vec4(m.rgb / m.a, m.a);
+        }
+        vec3 light = (mode_rgba[0].w & 2u) != 0u ? f.rgb : linear_light(f.rgb);
+        color = vec4(light, f.a * float(mode_rgba[0].y) / 255.0);
+        return;
     }
     uvec4 s;
     if (mode_rgba[0].z == 0u) {

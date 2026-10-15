@@ -3,6 +3,8 @@
 declare(strict_types=1);
 
 use Jovian\Engines\OpenGL\OpenGLDevice;
+use Surface\Contracts\Drawing\LentSurface;
+use Surface\Contracts\Drawing\SurfaceKind;
 use Surface\Contracts\Rasterize\Edges;
 use Surface\Drawing\DrawingManager;
 use Surface\Drawing\Gpu\GpuRenderingEngine;
@@ -101,4 +103,25 @@ function residentMb(): float
     }
 
     return ($kib + array_sum($clients)) / 1024;
+}
+
+/** A context of the platform's dialect, made current, lent as a canvas lends one. */
+function lentContext(int $width = 32, int $height = 16): LentSurface
+{
+    if (OPENGL_MAC) {
+        CGLChoosePixelFormat([kCGLPFAOpenGLProfile, kCGLOGLPVersion_GL4_Core, kCGLPFAAccelerated, kCGLPFAColorSize, 24, kCGLPFAAlphaSize, 8, 0], $pixelFormat, $count);
+        CGLCreateContext($pixelFormat, null, $context);
+        CGLDestroyPixelFormat($pixelFormat);
+        CGLSetCurrentContext($context);
+
+        return new LentSurface(SurfaceKind::GL_CONTEXT, ['context' => $context->pointer()], fn (): array => [$width, $height]);
+    }
+    $display = eglGetPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, null);
+    eglInitialize($display, $major, $minor);
+    eglBindAPI(EGL_OPENGL_ES_API);
+    eglChooseConfig($display, [EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT, EGL_SURFACE_TYPE, EGL_PBUFFER_BIT, EGL_NONE], $configs, 1, $count);
+    $context = eglCreateContext($display, $configs[0], null, [EGL_CONTEXT_MAJOR_VERSION, 3, EGL_CONTEXT_MINOR_VERSION, 1, EGL_NONE]);
+    eglMakeCurrent($display, null, null, $context);
+
+    return new LentSurface(SurfaceKind::GL_CONTEXT, ['context' => $context->pointer(), 'display' => $display->pointer()], fn (): array => [$width, $height]);
 }

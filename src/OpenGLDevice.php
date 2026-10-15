@@ -4,6 +4,12 @@ namespace Jovian\Engines\OpenGL;
 
 use CGLContextObj;
 use Closure;
+use NSColorSpace;
+use Surface\Framebuffers\HdrImage;
+use Surface\Drawing\Gpu\TargetsFormats;
+use Surface\Drawing\Gpu\DamageHistory;
+use Surface\Contracts\Drawing\TargetFormat;
+use Surface\Contracts\Drawing\ColorSpace;
 use EGLContext;
 use EGLDisplay;
 use Surface\Contracts\Drawing\DrawingException;
@@ -14,6 +20,7 @@ use Surface\Contracts\Framebuffers\Framebuffer;
 use Surface\Contracts\Framebuffers\GLFramebuffer;
 use Surface\Contracts\Framebuffers\Region;
 use Surface\Contracts\Rasterize\FillRule;
+use Surface\Contracts\Windows\ScaleFilter;
 use Surface\Drawing\Gpu\DrawList;
 use Surface\Drawing\Gpu\GpuDevice;
 use Surface\Drawing\Gpu\Op;
@@ -24,7 +31,8 @@ use Surface\Drawing\Gpu\Op;
  * into it.
  *
  * The target is an RGBA8 texture ($resolved) in a framebuffer object
- * ($resolvedFbo): read back, uploaded to, and blitted from. With four samples
+ * ($resolvedFbo): read back, uploaded to, and shown from
+ * (the show pass) or blitted from (a canvas's blitTo()). With four samples
  * a second framebuffer ($msaaFbo) holds a multisampled colour renderbuffer and
  * a multisampled depth-stencil renderbuffer; every frame draws there and is
  * resolved into the texture with glBlitFramebuffer. With one sample the
@@ -44,12 +52,24 @@ use Surface\Drawing\Gpu\Op;
  * holding a canvas's context is not disturbed. An adopted context is switched
  * the same way when the canvas does not have it current, and is never
  * destroyed: release() lets go of the device's objects in it and nothing else.
+ *
+ * HDR: every HDR target is an RGBA16F texture of linear light in sRGB
+ * primaries, SDR white at 1.0, drawn in any context that renders half
+ * floats. A host's context is swapped by the host in its own SDR format, so
+ * a target past RGBA8 sRGB is shown only where the window handed over its
+ * native window (handles() asks with 'native'): the device then makes a
+ * context and window surface in the colour space itself (WindowSurface),
+ * presents through the show pass and swaps, naming the changed rects.
  */
-class OpenGLDevice implements GpuDevice
+class OpenGLDevice implements GpuDevice, TargetsFormats
 {
     public const string VERTEX_SHADER = __DIR__.'/../resources/shaders/venusian.vert.glsl';
 
     public const string FRAGMENT_SHADER = __DIR__.'/../resources/shaders/venusian.frag.glsl';
+
+    public const string SHOW_VERTEX_SHADER = __DIR__.'/../resources/shaders/show.vert.glsl';
+
+    public const string SHOW_FRAGMENT_SHADER = __DIR__.'/../resources/shaders/show.frag.glsl';
 
     /** The dialect header prepended to each body: by GL_SHADING_LANGUAGE_VERSION, 'es' when it names "ES". */
     public const array HEADERS = [
@@ -83,6 +103,20 @@ class OpenGLDevice implements GpuDevice
     /** The surface the context was adopted from: once the canvas releases it, the context may be gone and no GL call is made. */
     private ?LentSurface $surface = null;
 
+    /** The colour space a window engine was made for: anything past sRGB asks the window for its native handles. */
+    private ColorSpace $wants = ColorSpace::Srgb;
+
+    /** The target's colour space. */
+    private ColorSpace $space = ColorSpace::Srgb;
+
+    /** The window surface this device made on a window's native handles; null in a host's context or its own offscreen one. */
+    private ?WindowSurface $window = null;
+
+    private ?DamageHistory $history = null;
+
+    /** @var array<int, true> Half-float source textures, by name. */
+    private array $floatTextures = [];
+
     private ?string $dialect = null;
 
     private ?int $maxSamples = null;
@@ -97,6 +131,14 @@ class OpenGLDevice implements GpuDevice
     private int $vao = 0;
 
     private int $vbo = 0;
+
+    /** The show pass's program, its uniforms, and the empty vertex array it draws its triangle with. */
+    private int $showProgram = 0;
+
+    /** @var array<string, int> */
+    private array $showUniforms = [];
+
+    private int $showVao = 0;
 
     /** A 1 × 1 transparent texture on the sampler's unit for every draw that samples nothing: a draw with none bound is one drivers log. */
     private int $blank = 0;
@@ -175,13 +217,15 @@ class OpenGLDevice implements GpuDevice
         }
     }
 
-    /** A device with no context of its own: adopt() hands it the canvas's. */
-    public static function adopting(): static
+    /** A device with no context of its own: adopt() hands it the window's, or the window's native handles for $space past sRGB. */
+    public static function adopting(ColorSpace $space = ColorSpace::Srgb): static
     {
         $device = (new \ReflectionClass(static::class))->newInstanceWithoutConstructor();
+        $device->wants = $space;
 
         return $device;
     }
+
 
     public function name(): string
     {
@@ -195,7 +239,7 @@ class OpenGLDevice implements GpuDevice
 
     public function handles(): array
     {
-        return [];
+        return $this->wants === ColorSpace::Srgb ? [] : ['native' => 1];
     }
 
     /** 'core' (OpenGL 4.1) or 'es' (OpenGL ES 3). */
@@ -230,7 +274,7 @@ class OpenGLDevice implements GpuDevice
         }
     }
 
-    public function target(int $width, int $height, int $samples): GLFramebuffer
+    private function make(int $width, int $height, int $samples, ColorSpace $space): GLFramebuffer
     {
         if ($samples !== 1 && $samples !== 4) {
             throw new DrawingException("opengl draws with 1 or 4 samples, got {$samples}.");
@@ -244,12 +288,16 @@ class OpenGLDevice implements GpuDevice
         }
         $this->fits($width, $height);
 
-        return $this->with(function () use ($width, $height, $samples): OpenGLFramebuffer {
+        return $this->with(function () use ($width, $height, $samples, $space): OpenGLFramebuffer {
             $this->releaseTarget();
+            $this->space = $space;
             $this->samples = $samples;
             $this->stale = false;
 
-            $this->resolved = $this->texture($width, $height);
+            $this->resolved = $this->texture($width, $height, $space->isHdr());
+            if ($space->isHdr()) {
+                $this->floatTextures[$this->resolved] = true;
+            }
 
             [$this->resolvedFbo] = glGenFramebuffers(1);
             glBindFramebuffer(GL_FRAMEBUFFER, $this->resolvedFbo);
@@ -261,7 +309,7 @@ class OpenGLDevice implements GpuDevice
                 [$this->msaaFbo] = glGenFramebuffers(1);
                 [$this->msaaColor] = glGenRenderbuffers(1);
                 glBindRenderbuffer(GL_RENDERBUFFER, $this->msaaColor);
-                glRenderbufferStorageMultisample(GL_RENDERBUFFER, 4, GL_RGBA8, $width, $height);
+                glRenderbufferStorageMultisample(GL_RENDERBUFFER, 4, $space->isHdr() ? GL_RGBA16F : GL_RGBA8, $width, $height);
                 glBindRenderbuffer(GL_RENDERBUFFER, $this->stencil);
                 glRenderbufferStorageMultisample(GL_RENDERBUFFER, 4, GL_DEPTH24_STENCIL8, $width, $height);
                 glBindFramebuffer(GL_FRAMEBUFFER, $this->msaaFbo);
@@ -277,7 +325,7 @@ class OpenGLDevice implements GpuDevice
                 glBindFramebuffer(GL_FRAMEBUFFER, 0);
                 $this->forgetTexture($this->resolved);
                 $this->releaseTarget();
-                throw new DrawingException(sprintf('opengl: the %d × %d target is incomplete (0x%04x).', $width, $height, $status));
+                throw new DrawingException(sprintf('opengl: the %d × %d %s target is incomplete (0x%04x)%s.', $width, $height, $space->isHdr() ? 'half-float' : 'RGBA8', $status, $space->isHdr() ? ': this context does not render into half floats' : ''));
             }
 
             // Defined contents from the start: transparent black, in both framebuffers.
@@ -293,16 +341,50 @@ class OpenGLDevice implements GpuDevice
             glBindFramebuffer(GL_FRAMEBUFFER, 0);
             $this->check('target()');
 
-            return $this->framebuffer = new OpenGLFramebuffer($this, $this->resolved, $width, $height);
+            return $this->framebuffer = new OpenGLFramebuffer($this, $this->resolved, $width, $height, $space->isHdr());
         });
     }
 
+    public function target(int $width, int $height, int $samples): GLFramebuffer
+    {
+        return $this->make($width, $height, $samples, ColorSpace::Srgb);
+    }
+
+    public function targetFormats(): array
+    {
+        if (PHP_OS_FAMILY === 'Darwin' && ! class_exists(NSColorSpace::class)) {
+            return [];
+        }
+
+        return [
+            [TargetFormat::Rgba16Float, ColorSpace::ExtendedLinearSrgb],
+            [TargetFormat::Rgba16Float, ColorSpace::ExtendedLinearDisplayP3],
+            [TargetFormat::Rgb10A2, ColorSpace::Hdr10Pq],
+            [TargetFormat::Rgba8, ColorSpace::DisplayP3],
+        ];
+    }
+
+    public function targetAs(int $width, int $height, int $samples, TargetFormat $format, ColorSpace $space): GLFramebuffer
+    {
+        if (! in_array([$format, $space], $this->targetFormats(), true)) {
+            throw new DrawingException("opengl makes no {$format->value} {$space->value} target.");
+        }
+        if ($this->adopted && is_null($this->window)) {
+            throw new DrawingException("opengl: a GL context lent by its host shows RGBA8 sRGB only; a {$space->value} target needs a window that hands over its native window (a GLFW or SDL3 staged window).");
+        }
+        if (! is_null($this->window) && $space !== $this->wants) {
+            throw new DrawingException("opengl: this device's window surface was made for {$this->wants->value}, not {$space->value}.");
+        }
+
+        return $this->make($width, $height, $samples, $space);
+    }
+
     /** @internal OpenGLFramebuffer's readback: $region of $texture as a frame string, rows top-down. */
-    public function read(int $texture, Region $region): string
+    public function read(int $texture, Region $region, bool $float = false): string
     {
         $this->live();
 
-        return $this->with(function () use ($texture, $region): string {
+        return $this->with(function () use ($texture, $region, $float): string {
             [$fbo] = glGenFramebuffers(1);
             try {
                 glBindFramebuffer(GL_READ_FRAMEBUFFER, $fbo);
@@ -310,7 +392,7 @@ class OpenGLDevice implements GpuDevice
                 glReadBuffer(GL_COLOR_ATTACHMENT0);
                 self::tightlyPacked(pack: true);
                 $height = $this->heightOf($texture);
-                $bytes = glReadPixels($region->x, $height - $region->bottom(), $region->width, $region->height, GL_RGBA, GL_UNSIGNED_BYTE, null)
+                $bytes = glReadPixels($region->x, $height - $region->bottom(), $region->width, $region->height, GL_RGBA, $float ? GL_HALF_FLOAT : GL_UNSIGNED_BYTE, null)
                     ?? throw new DrawingException('opengl: the readback returned nothing.');
             } finally {
                 glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
@@ -318,19 +400,19 @@ class OpenGLDevice implements GpuDevice
             }
             $this->check('read()');
 
-            return self::flip($bytes, $region->width * 4);
+            return self::flip($bytes, $region->width * ($float ? 8 : 4));
         });
     }
 
     /** @internal OpenGLFramebuffer's upload: $rgba8 (rows top-down) over $region of $texture. */
-    public function write(int $texture, string $rgba8, Region $region): void
+    public function write(int $texture, string $texels, Region $region, bool $float = false): void
     {
         $this->live();
-        $this->with(function () use ($texture, $rgba8, $region): void {
+        $this->with(function () use ($texture, $texels, $region, $float): void {
             self::tightlyPacked(pack: false);
             glBindTexture(GL_TEXTURE_2D, $texture);
             $height = $this->heightOf($texture);
-            glTexSubImage2D(GL_TEXTURE_2D, 0, $region->x, $height - $region->bottom(), $region->width, $region->height, GL_RGBA, GL_UNSIGNED_BYTE, self::flip($rgba8, $region->width * 4));
+            glTexSubImage2D(GL_TEXTURE_2D, 0, $region->x, $height - $region->bottom(), $region->width, $region->height, GL_RGBA, $float ? GL_HALF_FLOAT : GL_UNSIGNED_BYTE, self::flip($texels, $region->width * ($float ? 8 : 4)));
             glBindTexture(GL_TEXTURE_2D, 0);
             $this->check('write()');
             if ($texture === $this->resolved && $this->samples === 4) {
@@ -350,7 +432,7 @@ class OpenGLDevice implements GpuDevice
 
     private function forgetTexture(int $texture): void
     {
-        unset($this->textureWidths[$texture], $this->textureHeights[$texture]);
+        unset($this->textureWidths[$texture], $this->textureHeights[$texture], $this->floatTextures[$texture]);
         glDeleteTextures([$texture]);
     }
 
@@ -499,7 +581,7 @@ class OpenGLDevice implements GpuDevice
                 case Op::IMAGE:
                     [, $first, $texture, $inverse, $opacity, $filter] = $operation;
                     $source = $textures[$texture];
-                    $this->paint(self::IMAGE, 0, blend: true, opacity: $opacity, linear: $filter === Filter::LINEAR);
+                    $this->paint(self::IMAGE, 0, blend: true, opacity: $opacity, linear: $filter === Filter::LINEAR, floatSource: isset($this->floatTextures[$source]));
                     glBindTexture(GL_TEXTURE_2D, $source);
                     glUniform4f($this->uniforms['abcd'], $inverse->a, $inverse->b, $inverse->c, $inverse->d);
                     glUniform4f($this->uniforms['efwh'], $inverse->e, $inverse->f, (float) $this->textureWidths[$source], (float) $this->textureHeights[$source]);
@@ -539,9 +621,10 @@ class OpenGLDevice implements GpuDevice
     }
 
     /** Mode and colour uniforms, blending on or off. */
-    private function paint(int $mode, int $rgba, bool $blend, int $opacity = 255, bool $linear = false): void
+    private function paint(int $mode, int $rgba, bool $blend, int $opacity = 255, bool $linear = false, bool $floatSource = false): void
     {
-        glUniform4f($this->uniforms['mode_opacity'], (float) $mode, (float) $opacity, $linear ? 1.0 : 0.0, 0.0);
+        $flags = ($this->space->isHdr() ? 1 : 0) | ($floatSource ? 2 : 0);
+        glUniform4f($this->uniforms['mode_opacity'], (float) $mode, (float) $opacity, $linear ? 1.0 : 0.0, (float) $flags);
         glUniform4f($this->uniforms['rgba_in'], (float) (($rgba >> 24) & 0xFF), (float) (($rgba >> 16) & 0xFF), (float) (($rgba >> 8) & 0xFF), (float) ($rgba & 0xFF));
         if ($blend) {
             glEnable(GL_BLEND);
@@ -568,11 +651,15 @@ class OpenGLDevice implements GpuDevice
         $width = $source->viewportWidth();
         $height = $source->viewportHeight();
         $this->fits($width, $height);
-        $texture = $this->texture($width, $height);
-        glBindTexture(GL_TEXTURE_2D, $texture);
+        $float = $source instanceof HdrImage && $this->space->isHdr();
+        $texture = $this->texture($width, $height, $float);
         self::tightlyPacked(pack: false);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, $width, $height, GL_RGBA, GL_UNSIGNED_BYTE, $source->toRgba8());
+        glBindTexture(GL_TEXTURE_2D, $texture);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, $width, $height, GL_RGBA, $float ? GL_HALF_FLOAT : GL_UNSIGNED_BYTE, $float ? $source->rgba16f() : $source->toRgba8());
         glBindTexture(GL_TEXTURE_2D, 0);
+        if ($float) {
+            $this->floatTextures[$texture] = true;
+        }
 
         return $texture;
     }
@@ -582,7 +669,12 @@ class OpenGLDevice implements GpuDevice
     {
         $width = $this->textureWidths[$texture];
         $height = $this->textureHeights[$texture];
-        $copy = $this->texture($width, $height);
+        // A half-float texture's upright copy stays half floats: the target of an HDR engine, or a float source.
+        $float = isset($this->floatTextures[$texture]) || ($texture === $this->resolved && $this->space->isHdr());
+        $copy = $this->texture($width, $height, $float);
+        if ($float) {
+            $this->floatTextures[$copy] = true;
+        }
         [$read, $draw] = glGenFramebuffers(2);
         glBindFramebuffer(GL_READ_FRAMEBUFFER, $read);
         glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, $texture, 0);
@@ -597,7 +689,7 @@ class OpenGLDevice implements GpuDevice
     }
 
     /** An RGBA8 texture of this size, contents undefined, sampled texel for texel. */
-    private function texture(int $width, int $height): int
+    private function texture(int $width, int $height, bool $float = false): int
     {
         [$texture] = glGenTextures(1);
         glBindTexture(GL_TEXTURE_2D, $texture);
@@ -605,7 +697,7 @@ class OpenGLDevice implements GpuDevice
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, $width, $height, 0, GL_RGBA, GL_UNSIGNED_BYTE, null);
+        glTexImage2D(GL_TEXTURE_2D, 0, $float ? GL_RGBA16F : GL_RGBA8, $width, $height, 0, GL_RGBA, $float ? GL_HALF_FLOAT : GL_UNSIGNED_BYTE, null);
         glBindTexture(GL_TEXTURE_2D, 0);
         $this->textureWidths[$texture] = $width;
         $this->textureHeights[$texture] = $height;
@@ -629,7 +721,7 @@ class OpenGLDevice implements GpuDevice
             return;
         }
         foreach ($this->sourceTextures as $texture) {
-            unset($this->textureWidths[$texture], $this->textureHeights[$texture]);
+            unset($this->textureWidths[$texture], $this->textureHeights[$texture], $this->floatTextures[$texture]);
         }
         glDeleteTextures($this->sourceTextures);
         $this->sourceTextures = [];
@@ -651,7 +743,13 @@ class OpenGLDevice implements GpuDevice
         if ($this->hasContext) {
             throw new DrawingException('opengl: this device already has a context.');
         }
-        if (PHP_OS_FAMILY === 'Darwin') {
+        if (array_intersect_key($surface->handles(), ['view' => 0, 'wl_surface' => 0, 'x11_window' => 0]) !== []) {
+            $this->window = new WindowSurface($surface->handles(), $this->wants, $surface->size(), $surface->hdr());
+            $this->cgl = $this->window->cgl();
+            $this->eglDisplay = $this->window->eglDisplay();
+            $this->egl = $this->window->eglContext();
+            $this->history = new DamageHistory(2);
+        } elseif (PHP_OS_FAMILY === 'Darwin') {
             $this->cgl = CGLContextObj::fromPointer($surface->handle('context'));
         } else {
             $this->eglDisplay = EGLDisplay::fromPointer($surface->handle('display'));
@@ -666,10 +764,12 @@ class OpenGLDevice implements GpuDevice
     }
 
     /**
-     * In a lent context: copy the resolved target into the framebuffer bound for
-     * drawing, at the surface's size, and leave it bound. A GL canvas calls this
-     * inside its render callback, where the toolkit has bound the view's
-     * framebuffer. A device with its own context has nothing to present into.
+     * In a lent context: draw the resolved target into the framebuffer bound
+     * for drawing with the show pass, inside the surface's presentRect() with
+     * its filter, the bars black, and leave it bound. A GL canvas or stager
+     * calls this where its framebuffer is bound; it swaps. A device with its
+     * own offscreen context has nothing to present into. In the device's own
+     * window surface it draws into the window's framebuffer and swaps itself.
      */
     public function present(LentSurface $surface): bool
     {
@@ -678,12 +778,72 @@ class OpenGLDevice implements GpuDevice
         }
         $this->live();
         $this->with(function () use ($surface): void {
-            glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, $bound);
-            [$width, $height] = $surface->size();
-            $this->copyInto($bound[0] ?? 0, $width, $height, 'present()');
+            [$across, $down] = $surface->size();
+            if (is_null($this->window)) {
+                glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, $bound);
+                $this->show($bound[0] ?? 0, $across, $down, $surface);
+
+                return;
+            }
+            $target = $this->framebuffer ?? throw new DrawingException('opengl: target() comes before present().');
+            $this->window->fit([$across, $down]);
+            $placed = $this->show(0, $across, $down, $surface);
+            $changed = $this->history->record($target->damage(), $target->width(), $target->height(), $placed, $across, $down);
+            $this->window->swap($surface->vsync(), DamageHistory::flipped($changed, $down));
         });
 
         return true;
+    }
+
+    /**
+     * @internal The show pass's encoding for the current target: the
+     * transform code (0 as stored, 1 extended linear, 2 PQ), the SDR white
+     * level, and the nits an HDR10 value of 1.0 shows at.
+     *
+     * @return array{int, float, float}
+     */
+    public function transform(): array
+    {
+        $level = $this->surface?->hdr()?->sdrWhiteLevel ?? 1.0;
+        $white = $level > 0.0 ? $level : 1.0;
+
+        return [$this->transformCode(), $white, max(203.0, 80.0 * $white)];
+    }
+
+    /** The transform code: the device's own window surface encodes for its colour space; a host's context shows the target as stored. */
+    private function transformCode(): int
+    {
+        return $this->window?->transform() ?? 0;
+    }
+
+    /** The show pass into GL framebuffer $framebuffer of $across × $down, left bound; the rect the target landed in. */
+    private function show(int $framebuffer, int $across, int $down, LentSurface $surface): Region
+    {
+        $target = $this->framebuffer ?? throw new DrawingException('opengl: target() comes before present().');
+        [$filter, $fit] = $surface->scaling();
+        $placed = $fit->rect($across, $down, $target->width(), $target->height());
+        [$transform, $white, $nits] = $this->transform();
+        glBindFramebuffer(GL_FRAMEBUFFER, $framebuffer);
+        glViewport(0, 0, $across, $down);
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_BLEND);
+        glDisable(GL_STENCIL_TEST);
+        glColorMask(true, true, true, true);
+        glUseProgram($this->showProgram);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, $this->resolved);
+        glUniform1i($this->showUniforms['target'], 0);
+        glUniform4f($this->showUniforms['rect'], (float) $placed->x, (float) $placed->y, (float) $placed->width, (float) $placed->height);
+        glUniform4f($this->showUniforms['size_light'], (float) $target->width(), (float) $target->height(), $white, $nits);
+        glUniform4f($this->showUniforms['modes'], $filter === ScaleFilter::Linear ? 1.0 : 0.0, (float) $transform, (float) $down, 0.0);
+        glBindVertexArray($this->showVao);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glBindVertexArray(0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glUseProgram(0);
+        $this->check('present()');
+
+        return $placed;
     }
 
     /**
@@ -739,8 +899,15 @@ class OpenGLDevice implements GpuDevice
                     glDeleteProgram($this->program);
                     $this->program = 0;
                 }
+                if ($this->showProgram !== 0) {
+                    glDeleteProgram($this->showProgram);
+                    glDeleteVertexArrays([$this->showVao]);
+                    $this->showProgram = $this->showVao = 0;
+                }
             });
             // Destroyed, not un-made-current: whatever the caller had current stays.
+            $this->window?->release();
+            $this->window = null;
             if (! $this->adopted && ! is_null($this->cgl)) {
                 CGLReleaseContext($this->cgl);
             }
@@ -804,6 +971,21 @@ class OpenGLDevice implements GpuDevice
         glEnableVertexAttribArray(0);
         glVertexAttribPointer(0, 2, GL_FLOAT, false, 8, 0);
         glBindVertexArray(0);
+        $this->showProgram = glCreateProgram();
+        foreach ([GL_VERTEX_SHADER => self::SHOW_VERTEX_SHADER, GL_FRAGMENT_SHADER => self::SHOW_FRAGMENT_SHADER] as $type => $path) {
+            $shader = $this->compile($type, $path);
+            glAttachShader($this->showProgram, $shader);
+            glDeleteShader($shader);
+        }
+        glLinkProgram($this->showProgram);
+        glGetProgramiv($this->showProgram, GL_LINK_STATUS, $ok);
+        if ($ok !== GL_TRUE) {
+            throw new DrawingException('opengl: the show program did not link: '.glGetProgramInfoLog($this->showProgram));
+        }
+        foreach (['target', 'rect', 'size_light', 'modes'] as $name) {
+            $this->showUniforms[$name] = glGetUniformLocation($this->showProgram, $name);
+        }
+        [$this->showVao] = glGenVertexArrays(1);
         $this->check('context setup');
     }
 
@@ -868,6 +1050,11 @@ class OpenGLDevice implements GpuDevice
     /** @throws DrawingException When the context cannot be made current here (on EGL: current on another thread). */
     private function makeCurrent(): void
     {
+        if (! is_null($this->window)) {
+            $this->window->makeCurrent();
+
+            return;
+        }
         if (! is_null($this->cgl)) {
             $error = CGLSetCurrentContext($this->cgl);
             if ($error !== kCGLNoError) {
