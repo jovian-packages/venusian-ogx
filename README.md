@@ -14,7 +14,7 @@ The engine's framebuffer is an `OpenGLFramebuffer`, a Surface `GLFramebuffer`.
 
 - macOS: OpenGL 4.1 core through CGL. Apple deprecates it; SDK 15.4 still ships it.
 - Linux: EGL 1.5 with `EGL_MESA_platform_surfaceless` and OpenGL ES 3.1. Anti-aliased edges need `GL_MAX_SAMPLES` ≥ 4; a context with fewer refuses them by name.
-- PHP 8.4, `venusian-surface/drawing` ^0.10, ext-opengl ^0.10 with the pixel-store skip constants and, on Linux, `eglGetCurrentDisplay` / `eglGetCurrentSurface`.
+- PHP 8.4, `venusian-surface/drawing` ^0.11, ext-opengl ^0.11 with the pixel-store skip constants and, on Linux, `eglGetCurrentDisplay` / `eglGetCurrentSurface`.
 - No window, no display server: the engine's own context is offscreen. A window's context comes from a toolkit canvas as a `LentSurface`.
 
 ## Install
@@ -50,7 +50,7 @@ $display = app('displays')->panel('st7796', direct: true);
 $engine = app('drawing')->renderer('opengl', ['output' => $display]);
 ```
 
-On a canvas. AppKit, GTK and Qt canvases lend a GL context from slice 10b; the device adopts it and the canvas copies the frame into its view with `present()` inside its render callback.
+On a canvas. AppKit, GTK and Qt canvases lend a GL context; the device adopts it and the canvas copies the frame into its view with `present()` inside its render callback.
 
 ```php
 $engine = app('drawing')->renderer('opengl', ['output' => $canvas]);

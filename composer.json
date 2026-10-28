@@ -12,7 +12,7 @@
         "opengl-es"
     ],
     "license": "MIT",
-    "homepage": "https://venusian.projectsaturnstudios.com/ecosystem/jovian/venusian-opengl/0.10.x",
+    "homepage": "https://venusian.projectsaturnstudios.com/ecosystem/jovian/venusian-opengl/0.11.x",
     "support": {
         "issues": "https://github.com/jovian-packages/venusian-opengl/issues",
         "source": "https://github.com/jovian-packages/venusian-opengl"
@@ -24,16 +24,16 @@
         }
     ],
     "require": {
-        "php": "^8.4|^8.5|^8.6",
-        "ext-opengl": "^0.10",
-        "venusian-surface/contracts": "^0.10.0",
-        "venusian-surface/drawing": "^0.10.0",
-        "venusian-surface/framebuffers": "^0.10.0",
-        "venusian-voyager/nuts-and-bolts": "^0.10.1"
+        "php": "~8.4.27||^8.5.12",
+        "ext-opengl": "^0.11.0",
+        "venusian-surface/contracts": "^0.11.0",
+        "venusian-surface/drawing": "^0.11.0",
+        "venusian-surface/framebuffers": "^0.11.0",
+        "venusian-voyager/nuts-and-bolts": "^0.11.0"
     },
     "require-dev": {
         "pestphp/pest": "^4",
-        "venusian-surface/fonts": "^0.10.0"
+        "venusian-surface/fonts": "^0.11.0"
     },
     "suggest": {
         "ext-appkit": "HDR and Display P3 on macOS: the device's own EDR OpenGL surface on a staged window's view."
@@ -56,7 +56,7 @@
     },
     "extra": {
         "branch-alias": {
-            "dev-main": "0.10.x-dev"
+            "dev-main": "0.11.x-dev"
         },
         "venusian": {
             "providers": [
