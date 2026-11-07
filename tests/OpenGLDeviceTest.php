@@ -304,3 +304,15 @@ it('cancels a frame it cannot encode, and draws the next', function (): void {
     expect(pixelOf($engine->framebuffer()->toRgba8(), 16, 1, 1))->toBe('0080ffff')
         ->and(residentMb() - $before)->toBeLessThan(8.0);
 });
+
+it('refuses an operation it does not draw, before any GPU work', function (): void {
+    $engine = openglEngine(8, 8);
+    $device = $engine->device();
+    $list = new \Surface\Drawing\Gpu\DrawList(8, 8, '', [['bogus', 0]]);
+
+    try {
+        expect(fn () => $device->draw($list))->toThrow(\Surface\Contracts\Drawing\DrawingException::class, 'opengl: unknown draw op string');
+    } finally {
+        $engine->release();
+    }
+});

@@ -87,6 +87,12 @@ class OpenGLDevice implements GpuDevice, TargetsFormats
 
     protected const int COPY = 4;
 
+    protected const int ROUND = 5;
+
+    protected const int SHADE = 6;
+
+    protected const int GLYPH = 7;
+
     /** The context: made here, or adopted from a canvas (then not this device's to destroy). Null before either. */
     private ?CGLContextObj $cgl = null;
 
@@ -168,6 +174,9 @@ class OpenGLDevice implements GpuDevice, TargetsFormats
     private array $textureWidths = [];
 
     private array $textureHeights = [];
+
+    /** @var array<int, int> Glyph atlases (single-channel textures) by number, kept across draws until remade or released. */
+    private array $atlases = [];
 
     /**
      * A device over its own offscreen context: CGL 4.1 core on macOS, surfaceless
@@ -443,12 +452,33 @@ class OpenGLDevice implements GpuDevice, TargetsFormats
         $this->with(fn () => glFinish());
     }
 
+    /** The operations draw() handles. */
+    private const array OPS = [Op::CLEAR, Op::SCISSOR, Op::SOLID, Op::STENCIL_FILL, Op::COVER, Op::RECTS, Op::ELLIPSE, Op::RING, Op::UPLOAD, Op::IMAGE, Op::ATLAS, Op::MASK, Op::GLYPHS, Op::ROUNDRECT, Op::ROUNDRING, Op::SHADOW];
+
+    /**
+     * Every operation of $list is one draw() handles: checked before any GPU work, so an unknown one fails the
+     * frame loudly instead of being skipped.
+     *
+     * @throws DrawingException On the first operation it does not handle.
+     */
+    private static function known(DrawList $list): void
+    {
+        foreach ($list->operations as $operation) {
+            if (! in_array($operation[0], self::OPS, true)) {
+                $op = $operation[0] instanceof Op ? $operation[0]->name : get_debug_type($operation[0]);
+
+                throw new DrawingException("opengl: unknown draw op {$op}");
+            }
+        }
+    }
+
     public function draw(DrawList $list): void
     {
         $this->live();
         $target = $this->framebuffer ?? throw new DrawingException('opengl: target() comes before draw().');
         $width = $target->width();
         $height = $target->height();
+        self::known($list);
 
         $this->with(function () use ($list, $width, $height): void {
             try {
@@ -576,6 +606,69 @@ class OpenGLDevice implements GpuDevice, TargetsFormats
                     break;
 
                 case Op::UPLOAD:
+                    break;
+
+                case Op::ATLAS:
+                    // Single-channel, zeroed (a new texture's bytes are undefined). GL keeps the old one while a frame reads it.
+                    [, $atlas, $atlasWidth, $atlasHeight] = $operation;
+                    $this->fits($atlasWidth, $atlasHeight);
+                    if (isset($this->atlases[$atlas])) {
+                        glDeleteTextures([$this->atlases[$atlas]]);
+                        unset($this->textureWidths[$this->atlases[$atlas]], $this->textureHeights[$this->atlases[$atlas]]);
+                    }
+                    [$made] = glGenTextures(1);
+                    glBindTexture(GL_TEXTURE_2D, $made);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                    self::tightlyPacked(pack: false);
+                    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, $atlasWidth, $atlasHeight, 0, GL_RED, GL_UNSIGNED_BYTE, str_repeat("\0", $atlasWidth * $atlasHeight));
+                    glBindTexture(GL_TEXTURE_2D, $this->blank);
+                    $this->atlases[$atlas] = $made;
+                    // Kept with the device's textures, so release() deletes it.
+                    $this->textureWidths[$made] = $atlasWidth;
+                    $this->textureHeights[$made] = $atlasHeight;
+                    break;
+
+                case Op::MASK:
+                    // Rows top-down as the shader reads them: only regions no earlier frame drew from.
+                    [, $atlas, $region, $bytes] = $operation;
+                    self::tightlyPacked(pack: false);
+                    glBindTexture(GL_TEXTURE_2D, $this->atlases[$atlas]);
+                    glTexSubImage2D(GL_TEXTURE_2D, 0, $region->x, $region->y, $region->width, $region->height, GL_RED, GL_UNSIGNED_BYTE, $bytes);
+                    glBindTexture(GL_TEXTURE_2D, $this->blank);
+                    break;
+
+                case Op::GLYPHS:
+                    // The texels come from the frame's vertices again: attribute 1, offset so vertex k reads $texels + k.
+                    [, $first, $count, $texels, $atlas, $rgba] = $operation;
+                    $this->paint(self::GLYPH, $rgba, blend: true);
+                    glBindTexture(GL_TEXTURE_2D, $this->atlases[$atlas]);
+                    glEnableVertexAttribArray(1);
+                    glVertexAttribPointer(1, 2, GL_FLOAT, false, 8, ($texels - $first) * 8);
+                    glDrawArrays(GL_TRIANGLES, $first, $count);
+                    glDisableVertexAttribArray(1);
+                    glBindTexture(GL_TEXTURE_2D, $this->blank);
+                    break;
+
+                case Op::ROUNDRECT:
+                case Op::ROUNDRING:
+                    $ring = $operation[0] === Op::ROUNDRING;
+                    [, $first, $x0, $y0, $x1, $y1, $r] = $operation;
+                    $this->paint(self::ROUND, $operation[$ring ? 8 : 7], blend: true);
+                    glUniform4f($this->uniforms['shape'], $x0, $y0, $x1, $y1);
+                    glUniform4f($this->uniforms['radii'], (float) $r[0], (float) $r[1], (float) $r[2], (float) $r[3]);
+                    glUniform4f($this->uniforms['band'], $ring ? (float) $operation[7] : 0.0, $ring ? 1.0 : 0.0, (float) $this->samples, 0.0);
+                    glDrawArrays(GL_TRIANGLES, $first, 6);
+                    break;
+
+                case Op::SHADOW:
+                    [, $first, $x0, $y0, $x1, $y1, $radius, $blur, $rgba] = $operation;
+                    $this->paint(self::SHADE, $rgba, blend: true);
+                    glUniform4f($this->uniforms['shape'], $x0, $y0, $x1, $y1);
+                    glUniform4f($this->uniforms['band'], (float) $blur, (float) $radius, (float) $this->samples, 0.0);
+                    glDrawArrays(GL_TRIANGLES, $first, 6);
                     break;
 
                 case Op::IMAGE:
@@ -890,6 +983,7 @@ class OpenGLDevice implements GpuDevice, TargetsFormats
                     glDeleteTextures(array_keys($this->textureHeights));
                     $this->textureWidths = $this->textureHeights = [];
                 }
+                $this->atlases = [];
                 if ($this->vao !== 0) {
                     glDeleteVertexArrays([$this->vao]);
                     glDeleteBuffers([$this->vbo]);
@@ -946,6 +1040,7 @@ class OpenGLDevice implements GpuDevice, TargetsFormats
             glDeleteShader($shader);
         }
         glBindAttribLocation($this->program, 0, 'point');
+        glBindAttribLocation($this->program, 1, 'texel');
         glLinkProgram($this->program);
         glGetProgramiv($this->program, GL_LINK_STATUS, $ok);
         if ($ok !== GL_TRUE) {
@@ -955,7 +1050,7 @@ class OpenGLDevice implements GpuDevice, TargetsFormats
 
             throw new DrawingException('opengl: the program did not link: '.$log);
         }
-        foreach (['size', 'mode_opacity', 'rgba_in', 'shape', 'band', 'abcd', 'efwh', 'source'] as $name) {
+        foreach (['size', 'mode_opacity', 'rgba_in', 'shape', 'band', 'radii', 'abcd', 'efwh', 'source'] as $name) {
             $this->uniforms[$name] = glGetUniformLocation($this->program, $name);
         }
 
