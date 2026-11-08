@@ -5,7 +5,7 @@ description: OpenGLDevice - one GL context (own offscreen or a canvas's), persis
 resource: src/
 tags: [opengl, opengl-es, cgl, egl, gpu, drawing]
 status: draft
-generated: { by: claude-opus/5.5, at: 2026-10-05T12:00:00Z }
+generated: { by: claude-opus/5.5, at: 2026-11-08T06:00:00Z }
 sources:
   - id: device
     resource: src/OpenGLDevice.php
@@ -48,7 +48,7 @@ GL's row 0 is the bottom. The vertex shader maps target pixel y = 0 to clip y = 
 
 # Frame
 
-`draw()`: sources (too large cancels before drawing; each gets a texture), vertices plus one whole-target quad into the vertex buffer, program and uniforms, viewport, blank on unit 0; the restore when `stale`; bind `msaaFbo` (4) or `resolvedFbo` (1), clear the stencil, scissor on; every operation; `glBlitFramebuffer` `msaaFbo` → `resolvedFbo` with 4 samples; `glFlush`; `glGetError` checked; the frame's textures deleted.
+`draw()`: sources (too large cancels before drawing; each gets a texture), vertices plus one whole-target quad into the vertex buffer (one of a ring of three, each with a vertex array of its own, grown by powers of two from 256 KiB and written with `glBufferSubData`), program and uniforms, viewport, blank on unit 0; the restore when `stale`; bind `msaaFbo` (4) or `resolvedFbo` (1), clear the stencil, scissor on; every operation; `glBlitFramebuffer` `msaaFbo` → `resolvedFbo` with 4 samples; `glFlush`; `glGetError` checked; the frame's textures deleted.
 
 | Operation | State |
 |---|---|

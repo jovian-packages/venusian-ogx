@@ -49,10 +49,10 @@ it('copies into the framebuffer bound for drawing at the surface\'s size, and le
     $engine->frame(fn (RenderingEngine $g) => $g->clear(Color::rgb(0, 0, 0))->fillRect(0, 0, 16, 2, Color::rgb(255, 255, 255)));
 
     // A stand-in for the view's framebuffer, bound as a view would bind it before its callback.
-    [$view] = glGenTextures(1);
+    $view = glName('glGenTextures');
     glBindTexture(GL_TEXTURE_2D, $view);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 32, 16, 0, GL_RGBA, GL_UNSIGNED_BYTE, null);
-    [$fbo] = glGenFramebuffers(1);
+    $fbo = glName('glGenFramebuffers');
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, $fbo);
     glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, $view, 0);
 
@@ -60,7 +60,7 @@ it('copies into the framebuffer bound for drawing at the surface\'s size, and le
 
     glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, $bound);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, $fbo);
-    $pixels = glReadPixels(0, 0, 32, 16, GL_RGBA, GL_UNSIGNED_BYTE, null);
+    $pixels = readRgba8(0, 0, 32, 16);
     expect($copied)->toBeTrue()
         ->and($bound)->toBe([$fbo])
         ->and(pixelOf($pixels, 32, 5, 15))->toBe('ffffffff')
@@ -68,8 +68,8 @@ it('copies into the framebuffer bound for drawing at the surface\'s size, and le
         ->and(pixelOf($pixels, 32, 5, 11))->toBe('000000ff')
         ->and(glGetError())->toBe(GL_NO_ERROR);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glDeleteFramebuffers([$fbo]);
-    glDeleteTextures([$view]);
+    glDeleteFramebuffers(1, [$fbo]);
+    glDeleteTextures(1, [$view]);
 });
 
 it('leaves the view\'s framebuffer bound and no pack buffer after present()', function (): void {
@@ -79,10 +79,10 @@ it('leaves the view\'s framebuffer bound and no pack buffer after present()', fu
     $engine = new GpuRenderingEngine($device, 8, 8);
     $engine->frame(fn (RenderingEngine $g) => $g->clear(Color::rgb(0, 0, 0)));
     $engine->framebuffer()->toRgba8();                        // a readback: the pack path ran
-    [$view] = glGenTextures(1);
+    $view = glName('glGenTextures');
     glBindTexture(GL_TEXTURE_2D, $view);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 8, 8, 0, GL_RGBA, GL_UNSIGNED_BYTE, null);
-    [$fbo] = glGenFramebuffers(1);
+    $fbo = glName('glGenFramebuffers');
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, $fbo);
     glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, $view, 0);
 
@@ -94,8 +94,8 @@ it('leaves the view\'s framebuffer bound and no pack buffer after present()', fu
         ->and($pack)->toBe([0])
         ->and(glGetError())->toBe(GL_NO_ERROR);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glDeleteFramebuffers([$fbo]);
-    glDeleteTextures([$view]);
+    glDeleteFramebuffers(1, [$fbo]);
+    glDeleteTextures(1, [$view]);
 });
 
 it('presents nothing from a device with its own context', function (): void {
@@ -114,17 +114,17 @@ it('blits the target into a framebuffer the canvas names, at the canvas\'s size,
     $engine->frame(fn (RenderingEngine $g) => $g->clear(Color::rgb(0, 0, 0))->fillRect(0, 0, 16, 2, Color::rgb(255, 255, 255)));
 
     // A stand-in for the view's framebuffer: a texture twice the size.
-    [$view] = glGenTextures(1);
+    $view = glName('glGenTextures');
     glBindTexture(GL_TEXTURE_2D, $view);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 32, 16, 0, GL_RGBA, GL_UNSIGNED_BYTE, null);
-    [$fbo] = glGenFramebuffers(1);
+    $fbo = glName('glGenFramebuffers');
     glBindFramebuffer(GL_FRAMEBUFFER, $fbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, $view, 0);
 
     $device->blitTo($fbo, 32, 16);
 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, $fbo);
-    $pixels = glReadPixels(0, 0, 32, 16, GL_RGBA, GL_UNSIGNED_BYTE, null);
+    $pixels = readRgba8(0, 0, 32, 16);
     // GL row 15 is the top: the white band (surface rows 0-1) covers GL rows 12-15 at 2x.
     expect(pixelOf($pixels, 32, 5, 15))->toBe('ffffffff')
         ->and(pixelOf($pixels, 32, 5, 12))->toBe('ffffffff')
@@ -132,8 +132,8 @@ it('blits the target into a framebuffer the canvas names, at the canvas\'s size,
         ->and(pixelOf($pixels, 32, 5, 0))->toBe('000000ff')
         ->and(glGetError())->toBe(GL_NO_ERROR);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glDeleteFramebuffers([$fbo]);
-    glDeleteTextures([$view]);
+    glDeleteFramebuffers(1, [$fbo]);
+    glDeleteTextures(1, [$view]);
 });
 
 it('lets go of everything on release(), and leaves a lent context alive', function (): void {
@@ -219,10 +219,10 @@ it('blits inside the canvas context and puts back the one that was current', fun
     $engine = new GpuRenderingEngine($device, 16, 8);
     $engine->frame(fn (RenderingEngine $g) => $g->clear(Color::rgb(0, 128, 255)));
     // The view's framebuffer, made in the canvas's context while it is current.
-    [$view] = glGenTextures(1);
+    $view = glName('glGenTextures');
     glBindTexture(GL_TEXTURE_2D, $view);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 16, 8, 0, GL_RGBA, GL_UNSIGNED_BYTE, null);
-    [$fbo] = glGenFramebuffers(1);
+    $fbo = glName('glGenFramebuffers');
     glBindFramebuffer(GL_FRAMEBUFFER, $fbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, $view, 0);
     $other = new OpenGLDevice;
@@ -234,10 +234,10 @@ it('blits inside the canvas context and puts back the one that was current', fun
     expect(OPENGL_MAC ? CGLGetCurrentContext()?->pointer() : eglGetCurrentContext()?->pointer())->toBe($before);
     $device->current();
     glBindFramebuffer(GL_READ_FRAMEBUFFER, $fbo);
-    expect(bin2hex(glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, null)))->toBe('0080ffff');
+    expect(bin2hex(readRgba8(0, 0, 1, 1)))->toBe('0080ffff');
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glDeleteFramebuffers([$fbo]);
-    glDeleteTextures([$view]);
+    glDeleteFramebuffers(1, [$fbo]);
+    glDeleteTextures(1, [$view]);
 });
 
 it('blits only from a context a canvas lent', function (): void {
@@ -269,10 +269,10 @@ it('frees its objects in the lent context when the canvas releases the surface',
 /** A $width × $height texture in a framebuffer, bound for drawing, cleared white: what a canvas binds before present(). @return array{int, int} framebuffer, texture */
 function boundView(int $width, int $height): array
 {
-    [$view] = glGenTextures(1);
+    $view = glName('glGenTextures');
     glBindTexture(GL_TEXTURE_2D, $view);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, $width, $height, 0, GL_RGBA, GL_UNSIGNED_BYTE, null);
-    [$fbo] = glGenFramebuffers(1);
+    $fbo = glName('glGenFramebuffers');
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, $fbo);
     glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, $view, 0);
     glClearColor(1.0, 1.0, 1.0, 1.0);
@@ -285,7 +285,7 @@ function boundView(int $width, int $height): array
 function viewPixels(int $fbo, int $width, int $height): string
 {
     glBindFramebuffer(GL_READ_FRAMEBUFFER, $fbo);
-    $rows = glReadPixels(0, 0, $width, $height, GL_RGBA, GL_UNSIGNED_BYTE, null);
+    $rows = readRgba8(0, 0, $width, $height);
 
     return implode('', array_reverse(str_split($rows, $width * 4)));
 }
@@ -308,8 +308,8 @@ it('places a target of another size by the surface fit, the bars black', functio
         ->and(glGetError())->toBe(GL_NO_ERROR)
         ->and($device->transform())->toBe([0, 1.0, 203.0]);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glDeleteFramebuffers([$fbo]);
-    glDeleteTextures([$view]);
+    glDeleteFramebuffers(1, [$fbo]);
+    glDeleteTextures(1, [$view]);
 });
 
 it('copies byte for byte at equal size, nearest or linear, rows the right way up', function (ScaleFilter $filter): void {
@@ -325,6 +325,6 @@ it('copies byte for byte at equal size, nearest or linear, rows the right way up
 
     expect(viewPixels($fbo, 4, 2))->toBe($engine->framebuffer()->toRgba8());
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glDeleteFramebuffers([$fbo]);
-    glDeleteTextures([$view]);
+    glDeleteFramebuffers(1, [$fbo]);
+    glDeleteTextures(1, [$view]);
 })->with([ScaleFilter::Nearest, ScaleFilter::Linear]);

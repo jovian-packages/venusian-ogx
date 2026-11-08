@@ -153,7 +153,7 @@ final class WindowSurface
             foreach ($changed as $rect) {
                 array_push($rects, $rect->x, $rect->y, $rect->width, $rect->height);
             }
-            if (eglSwapBuffersWithDamageKHR($this->display, $this->surface, $rects)) {
+            if (eglSwapBuffersWithDamageKHR($this->display, $this->surface, $rects, count($changed))) {
                 return;
             }
         }

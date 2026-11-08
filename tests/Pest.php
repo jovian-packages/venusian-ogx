@@ -116,7 +116,7 @@ function lentContext(int $width = 32, int $height = 16): LentSurface
 
         return new LentSurface(SurfaceKind::GL_CONTEXT, ['context' => $context->pointer()], fn (): array => [$width, $height]);
     }
-    $display = eglGetPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, null);
+    $display = eglGetPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA, null, null);
     eglInitialize($display, $major, $minor);
     eglBindAPI(EGL_OPENGL_ES_API);
     eglChooseConfig($display, [EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT, EGL_SURFACE_TYPE, EGL_PBUFFER_BIT, EGL_NONE], $configs, 1, $count);
@@ -124,4 +124,21 @@ function lentContext(int $width = 32, int $height = 16): LentSurface
     eglMakeCurrent($display, null, null, $context);
 
     return new LentSurface(SurfaceKind::GL_CONTEXT, ['context' => $context->pointer(), 'display' => $display->pointer()], fn (): array => [$width, $height]);
+}
+
+/** The first name a glGen* function writes. */
+function glName(callable $generate): int
+{
+    $generate(1, $names);
+
+    return $names[0];
+}
+
+/** RGBA8 pixels of the bound read framebuffer, rows bottom-up as GL reads them, through an ext-fb buffer. */
+function readRgba8(int $x, int $y, int $width, int $height): string
+{
+    $rows = new FbBuffer(new FbFormat(FB_LAYOUT_RGBA8888, channelOrder: FB_CHANNELS_RGBA), $width, $height);
+    glReadPixels($x, $y, $width, $height, GL_RGBA, GL_UNSIGNED_BYTE, $rows->pointer());
+
+    return $rows->bytes();
 }
