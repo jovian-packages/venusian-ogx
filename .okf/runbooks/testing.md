@@ -1,23 +1,25 @@
 ---
 type: Runbook
 title: Testing
-description: Real-GPU Pest suite on the Mac (CGL) and the Pi (surfaceless EGL) with Surface's GpuParity; temporary path repository; php84, zhp, Pi php.
+description: Four check scripts on the real GPU with no window, each given a venusian/topside checkout; zhp on the Mac.
 resource: tests/
-tags: [opengl, pest]
+tags: [opengl, testing]
 status: draft
-generated: { by: claude-opus/5.5, at: 2026-10-05T12:00:00Z }
+generated: { by: claude-opus/5.5, at: 2026-11-14T00:00:00Z }
 sources:
-  - id: pest
-    resource: tests/Pest.php
-    title: tests/Pest.php
+  - id: smoke
+    resource: tests/smoke.php
+    title: tests/smoke.php
 ---
 
 # Steps
 
-* The suite runs the real GPU. `tests/Pest.php` fails with a message without ext-opengl. No window or display server: contexts are offscreen (CGL; EGL surfaceless on Linux). Nothing skips.
-* `tests/Pest.php` requires Surface's `GpuParity` from the sibling checkout (`dev/venusian/surface/tests`); `SURFACE_TESTS` overrides the directory.
-* Surface's 0.11 splits are not on Packagist: add a path repository to `<surface>/src/Surface/*` for the run (`composer config repositories.surface '{"type":"path","url":"…/src/Surface/*","options":{"symlink":true}}'`), `composer update`.
-* Mac: `php84 -d memory_limit=128M vendor/bin/pest`, then the same on ZTS (`zhp`).
-* Pi: copy this package and the Surface checkout's `src` and `tests` without `vendor/`, `.git` and locks (`tar` piped into `fnk`), path repository `../surface/src/Surface/*`, then `SURFACE_TESTS=<surface>/tests php -d memory_limit=128M vendor/bin/pest`. ext-opengl on the Pi needs `eglGetCurrentDisplay` and `eglGetCurrentSurface`.
-* Panel: an app requiring this package, `dept-of-scrapyard-robotics/st77xx` and `microscrap/scrapyard-linux`; `config/circuits/st7796.php` as st77xx's quick start; a script that boots the console kernel and, for `velvet` then `opengl`, makes `app('displays')->panel('st7796', direct: true)`, `app('drawing')->renderer($name, ['output' => $display])`, draws one whole frame and 60 partial ones with `present()` after each, and prints the times and bytes.
-* After: remove `vendor/`, `composer.lock` and the repository entry; `git diff composer.json` is empty at commit time.
+* Every check runs on the real GPU and opens no window. Each takes the path to a `venusian/topside` checkout and uses its `vendor/` and test helpers [^smoke].
+* `zhp tests/smoke.php <topside>`: framebuffers, the rasterizer, the painter (shapes, gradients, images, layers, filters, glass), presenting into a bare `NSView`. 65 checks.
+* `zhp tests/filters.php <topside>`: each filter step against `PHPLandFilters`. 35 checks.
+* `zhp tests/glass.php <topside>`: Kawase levels and panes against `PHPLandGlass`, byte for byte, and pyramids built only for panes a frame redraws.
+* `zhp tests/raycast.php <topside>`: rays, fans, `casts()` and views against Velvet's PHP marcher. 16 checks.
+* Velvet's picture is a loose check: antialiased edges come from four samples a pixel, so edge bytes differ from Velvet's exact coverage. Each script exits 1 when a check fails.
+* The old engine's Pest suite is parked in `deprecated/tests`.
+
+[^smoke]: tests/smoke.php

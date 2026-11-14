@@ -1,90 +1,58 @@
 ---
 type: Module
 title: Engine
-description: OpenGLDevice - one GL context (own offscreen or a canvas's), persistent target in two framebuffer objects, one program in core or ES dialect, fixed-function source-over with Velvet's alpha, stencil-then-cover, blit resolve, restore after upload, blitTo into a canvas's framebuffer.
+description: OpenGLContext and its four resources on Topside - a CGL 4.1 core context of its own; framebuffers with a four-sample twin resolved when read; stencil-then-cover with a convex fast path; a painter that draws a pass from one vertex and one block upload; filters, glass and layers on the GPU; a raycaster walked by a fragment pass; frames shown through an NSOpenGLView of its own.
 resource: src/
-tags: [opengl, opengl-es, cgl, egl, gpu, drawing]
+tags: [opengl, cgl, gpu, graphics, topside]
 status: draft
-generated: { by: claude-opus/5.5, at: 2026-11-08T06:00:00Z }
+generated: { by: claude-opus/5.5, at: 2026-11-14T00:00:00Z }
 sources:
-  - id: device
-    resource: src/OpenGLDevice.php
-    title: OpenGLDevice
+  - id: context
+    resource: src/OpenGLContext.php
+    title: OpenGLContext
   - id: framebuffer
     resource: src/OpenGLFramebuffer.php
     title: OpenGLFramebuffer
-  - id: frag
-    resource: resources/shaders/venusian.frag.glsl
-    title: venusian.frag.glsl
+  - id: painter
+    resource: src/OpenGLPainter.php
+    title: OpenGLPainter
+  - id: caster
+    resource: src/OpenGLCaster.php
+    title: OpenGLCaster
+  - id: surface
+    resource: src/OpenGLSurface.php
+    title: OpenGLSurface
 ---
-
-# Overview
-
-`OpenGLDevice implements Surface\Drawing\Gpu\GpuDevice` over ext-opengl. `GpuRenderingEngine` lowers drawing calls to a `DrawList`; `draw()` renders it in one pass. `OpenGLFramebuffer extends GLFramebuffer` over the resolved texture.[^device][^framebuffer]
 
 # Context
 
-| Made by | macOS | Linux | Destroyed by `release()` |
-|---|---|---|---|
-| `new OpenGLDevice` | CGL, `kCGLOGLPVersion_GL4_Core`, accelerated | `eglGetPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA)`, ES 3.1 context, no surface | yes |
-| `adopting()` + `adopt()` | `CGLContextObj::fromPointer(handle('context'))` | `EGLContext` from `handle('context')`, `EGLDisplay` from `handle('display')` | no |
+`OpenGLContext` is the engine Graphics hands out as `opengl`, on the GPU backend only. It opens a CGL OpenGL 4.1 core context of its own, offscreen, and makes it current before every use [^context]. On Linux it throws: an EGL context is not built.
 
-`prepareContext()` runs once per context: dialect from `GL_SHADING_LANGUAGE_VERSION` (`es` when it names ES), `GL_MAX_SAMPLES`, `GL_MAX_TEXTURE_SIZE`, the program, the 1 × 1 blank texture, the vertex array and buffer. `with()` wraps every GL use: when the device's context is not current it saves the current context (EGL: display, draw and read surfaces too), makes its own current, and restores after. When it is current, nothing switches: a canvas's context stays current with its own surfaces. A failed make-current throws before any GL call. An adopted device keeps its `LentSurface` and registers `onRelease()`: the canvas releases the surface before it takes the context away, and the device then deletes everything it made in that context and marks itself released. No GL call is made after; a later `release()` does nothing.
+* Uniform blocks carry what a draw needs: `Frame` (binding 0: the target's size and where it starts on the surface), `Paint` (binding 1: one draw's data), `Walls` (binding 2: a raycast scenery's wall table). A pass uploads all its blocks in one buffer, each at the offset alignment, and binds each by range.
+* A shader names its samplers on a `// units:` line; `program()` gives them texture units 0, 1, ... in that order.
+* Pixels come back through `glReadPixels` into ext-appkit's `CFData`, kept and grown. Without ext-appkit, reading throws, naming it.
+* Row 0 of every texture is the surface's top: `place.vert` maps pixel y 0 to window row 0, so window coordinates are surface pixels and nothing is flipped until a frame is shown.
 
-# Target
+# Framebuffer
 
-| Object | Storage | Samples | Role |
-|---|---|---|---|
-| `resolved` texture in `resolvedFbo` | RGBA8 | 1 | read back, uploaded to, resolved into, blitted from |
-| `msaaColor` renderbuffer in `msaaFbo` | RGBA8 | 4 | drawn into; absent with 1 sample |
-| `stencil` renderbuffer | DEPTH24_STENCIL8 | 1 or 4 | on `resolvedFbo` (1 sample) or `msaaFbo` (4); cleared every frame, left at zero by cover |
-| `blank` texture | RGBA8, 1 × 1 | 1 | on unit 0 for every draw that samples nothing |
+An RGBA8 texture of premultiplied colour, a four-sample colour and stencil twin, and a hard-edge stencil [^framebuffer]. The texture is behind the twin after antialiased draws until something reads it: `resolve()` blits the region drawn, and every reader calls it first (`textureName()`, read, write, scroll, a hard-edged draw). A resolve is a blit of its own in GL, measured at 0.048 ms of CPU whatever its size. A transient framebuffer (a layer's sheet) holds its texture alone and draws through the engine's one scratch twin, which grows to the largest sheet: a sheet is drawn in one pass, resolved at its end, before another's starts.
 
-`target()` accepts 1 or 4 samples (4 needs `maxSamples()` ≥ 4), 1 × 1 up to `GL_MAX_TEXTURE_SIZE`, and clears both framebuffers to transparent black. The resolved texture belongs to its `OpenGLFramebuffer`, deleted by `forget()` when that object goes; a re-made target leaves the old one readable.
+# Painting
 
-# Rows
+The rasterizer and painter stencil a path's fans (counting up and down for non-zero, flipping for even-odd), then cover its box. A path of one convex contour (every turn the same way, once round) is drawn as its fan in one step: its triangles never overlap, so every sample is coloured once, the same bytes as stencil-then-cover [^painter].
 
-GL's row 0 is the bottom. The vertex shader maps target pixel y = 0 to clip y = +1, so the target texture is bottom-up. Reads and uploads first set the pixel store to tightly packed (alignment 1, row length 0, skips 0, no pixel buffer). `read()` reads `y = height − bottom()` and reverses the rows; `write()` reverses them and writes at the same y. `Op::SCISSOR` flips its y the same way. The fragment shader samples a source with `texelFetch(source, (u, v))`, v the Surface row: a CPU source is uploaded top-down as it is, and a texture of this device (restore, own framebuffer as image) goes through `upright()`, a `glBlitFramebuffer` with the destination rows reversed into a new texture.
+The painter's shaders are the vulkan engine's, converted to GLSL 4.10 core: push constants became the `Paint` block (every member a vec4 or scalar, so std140 places them where std430 did; the colour matrix is `vec4 m[5]`), descriptor bindings became named units. Filter steps read their data from R32UI textures, 1024 words a row, written with `glTexSubImage2D`.
 
-# Frame
+# Raycasting
 
-`draw()`: sources (too large cancels before drawing; each gets a texture), vertices plus one whole-target quad into the vertex buffer (one of a ring of three, each with a vertex array of its own, grown by powers of two from 256 KiB and written with `glBufferSubData`), program and uniforms, viewport, blank on unit 0; the restore when `stale`; bind `msaaFbo` (4) or `resolvedFbo` (1), clear the stencil, scissor on; every operation; `glBlitFramebuffer` `msaaFbo` → `resolvedFbo` with 4 samples; `glFlush`; `glGetError` checked; the frame's textures deleted.
+OpenGL 4.1 has no compute, so the hits pass is a fragment pass over an RGBA32F target, one pixel a ray's row, walking Velvet's grid from the ray's cell and its fraction [^caster]. The grid's cells and the wall textures are R32UI textures 1024 words a row: a grid is limited by its cells, not by a texture side. A 1x1 RG32F stands in for rays with no directions of their own, so the driver never validates a sampler against no texture.
 
-| Operation | State |
-|---|---|
-| CLEAR | blend off, whole-target scissor, SOLID over the whole quad, then the current scissor back |
-| SOLID | blend off |
-| STENCIL_FILL | colour mask off, stencil always; NON_ZERO: front `GL_INCR_WRAP`, back `GL_DECR_WRAP`; EVEN_ODD: `GL_INVERT`; SOLID paint (never discards) |
-| COVER | stencil not-equal 0, pass `GL_ZERO`; FILL, blend on |
-| RECTS | FILL, blend on |
-| ELLIPSE, RING | OVAL, blend on; `band.z` = samples |
-| IMAGE | IMAGE, blend on, the source texture on unit 0 |
+# Showing
 
-Source-over: `glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA)`, `GL_FUNC_ADD`.[^frag]
+On a stage that lends an `NSView`, the engine adds a child `NSOpenGLView` at full resolution, whose double-buffered context shares the engine's textures and programs: `NSOpenGLContext::initWithFormatShareContext` over `NSOpenGLContext::initWithCGLContextObj` of the engine's own context [^surface]. Showing resolves and flushes the frame in the engine's context, draws its texture flipped into the view's back buffer, and swaps without waiting for the display.
 
-# Restore
-
-`write()` into `resolved` with 4 samples sets `stale`. The next `draw()`, after its sources and before its operations, draws the upright copy of `resolved` into `msaaFbo` in COPY mode, scissor and blend off.
-
-# Canvas
-
-A GL canvas calls `present($surface)` in its view's render callback: an adopted device reads `GL_DRAW_FRAMEBUFFER_BINDING` (the view's framebuffer the toolkit bound) and copies into it at `$surface->size()`, answering true; a device with its own context, or a released surface, answers false. `blitTo($framebuffer, $width, $height)` is the same copy into a named framebuffer (adopted devices only). Both run `copyInto()` through `with()`: `glBlitFramebuffer` from `resolvedFbo`, stretched, nearest, scissor off, no pixel-pack buffer, the destination left bound. Both are GL framebuffers, so rows need no flip.
-
-# Release
-
-`release()` runs once (and from `__destruct` for an owned context): `glFinish`, then deletes the framebuffer objects, renderbuffers, every tracked texture (live framebuffers', the blank), vertex array, buffer and program, then destroys the context only when this device made it, without un-making it current first. Read, write, `target()`, `current()` and `blitTo()` afterwards throw `opengl: this device was released.`. Shaders are deleted once attached; a compile or link failure deletes what it made.
-
-[^device]: src/OpenGLDevice.php
-[^framebuffer]: src/OpenGLFramebuffer.php
-[^frag]: resources/shaders/venusian.frag.glsl
-
-# Presenting and HDR
-
-Present = show pass into bound framebuffer: `presentRect()`, window's filter, black bars, encoded. Host's GL context = SDR only (host picks pixel format). HDR / P3: make engine on a GLFW or SDL3 staged window with `format` / `colorspace` → device gets native window (`'native'` handle, lend carries `'context' => 0`), makes own surface:
-
-- macOS: NSOpenGLContext, half floats, EDR view, extended-linear window colour space (HDR10 shown through EDR: no PQ GL surface on macOS); needs ext-appkit.
-- Linux: EGL window surface in `EGL_GL_COLORSPACE` (scRGB linear half floats, BT.2020 PQ 10-bit + SMPTE 2086 / CTA 861.3 metadata, Display P3) where the display lists the extension; else refused naming it. Wayland swaps at interval 0. Pi 5 Mesa lists none (measured): refused there.
-
-    $engine = $drawing->engine('opengl', ['output' => $stagedWindow, 'format' => TargetFormat::Rgba16Float]);
-
-Offscreen device draws every pair (readback, `hdrSnapshot()`).
+[^context]: OpenGLContext
+[^framebuffer]: OpenGLFramebuffer
+[^painter]: OpenGLPainter
+[^caster]: OpenGLCaster
+[^surface]: OpenGLSurface

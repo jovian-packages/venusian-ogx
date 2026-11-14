@@ -1,6 +1,6 @@
 {
     "name": "jovian/venusian-opengl",
-    "description": "The 'opengl' rendering engine for Venusian Surface: a GpuDevice over ext-opengl that draws Surface's draw lists in an OpenGL 4.1 core or OpenGL ES 3.1 context, its own offscreen or one a canvas lends.",
+    "description": "The 'opengl' graphics engine for Venusian Topside: framebuffers and a rasterizer on the GPU, in an OpenGL 4.1 core context of its own, through ext-opengl.",
     "type": "library",
     "keywords": [
         "framework",
@@ -25,19 +25,11 @@
     ],
     "require": {
         "php": "~8.4.27||^8.5.12",
-        "ext-fb": "^0.11.1",
         "ext-opengl": "^0.11.0",
-        "venusian-surface/contracts": "^0.11.0",
-        "venusian-surface/drawing": "^0.11.0",
-        "venusian-surface/framebuffers": "^0.11.0",
-        "venusian-voyager/nuts-and-bolts": "^0.11.0"
+        "venusian/topside": "^0.11.5"
     },
     "require-dev": {
-        "pestphp/pest": "^4",
-        "venusian-surface/fonts": "^0.11.0"
-    },
-    "suggest": {
-        "ext-appkit": "HDR and Display P3 on macOS: the device's own EDR OpenGL surface on a staged window's view."
+        "pestphp/pest": "^4"
     },
     "autoload": {
         "psr-4": {

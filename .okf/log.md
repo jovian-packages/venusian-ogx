@@ -1,5 +1,9 @@
 # Log
 
+## 2026-11-14
+
+* The engine is rebuilt on Topside: `OpenGLContext` with framebuffers, a rasterizer, a painter and a raycaster on the GPU, frames shown through an `NSOpenGLView` of its own. The old engine is parked in `deprecated/`. See [engine](architecture/engine.md) and [testing](runbooks/testing.md).
+
 ## 2026-11-08
 
 * G3 reuse (Surface drawing-path spec): the vertex buffer is a ring of three (a vertex array each) written in place, and the frame's source textures (uploads, the restore's copy) go back to a pool by size and kind (8 a size, 24 sizes) instead of being deleted; a texture a pass already let go of is not pooled. Parity: all 63 Surface scenes pass; `OpenGLDeviceTest` draws six frames through the ring and pool with a growth between. Data and Lists tabs at scale 2: 42 and 21 ms CPU a frame before and after; the device's share of a frame is small.
