@@ -10,16 +10,12 @@ use NSView;
 use Surface\Contracts\Graphics\ActorStage;
 use Surface\Contracts\Graphics\Backend;
 use Surface\Contracts\Graphics\GraphicsException;
-use Surface\Contracts\Graphics\Resource;
+use Surface\Contracts\Graphics\CastsRays;
+use Surface\Contracts\Graphics\Feature;
 use Surface\Contracts\Rendering\Framebuffers\FormatSpec;
 use Surface\Contracts\Rendering\Framebuffers\Region;
-use Surface\Contracts\Rendering\Rasterization\Edges;
 use Surface\Contracts\Rendering\Raycasting\Grid;
-use Surface\Graphics\GEFramebuffer;
-use Surface\Graphics\GEPainter;
-use Surface\Graphics\GERasterizer;
-use Surface\Graphics\GERaycaster;
-use Surface\Graphics\GraphicsEngine;
+use Surface\Graphics\GfxDevice;
 use Throwable;
 use WeakMap;
 
@@ -34,7 +30,7 @@ use WeakMap;
  * On macOS the context is CGL's. Reading pixels back writes them to an address, so it needs memory
  * there: ext-appkit's CFData, used when ext-appkit is loaded and never declared in composer.json.
  */
-class OpenGLContext extends GraphicsEngine
+class OpenGLContext extends GfxDevice implements CastsRays
 {
     /** The uniform block a vertex stage reads: the target's size and where it starts. */
     public const int FRAME = 0;
@@ -76,7 +72,7 @@ class OpenGLContext extends GraphicsEngine
     /** @var array{int, int, int, int, int, int}|null the scratch: four-sample framebuffer, its colour and stencil, the hard-edge stencil, width, height */
     protected ?array $scratch = null;
 
-    /** @var WeakMap<NSView, OpenGLSurface> the surfaces made over views stages lent */
+    /** @var WeakMap<NSView, OpenGLView> what it made over each view a stage lent */
     protected WeakMap $surfaces;
 
     /** @throws GraphicsException When the backend is not the GPU, or the context cannot be made. */
@@ -112,9 +108,10 @@ class OpenGLContext extends GraphicsEngine
         return ['gpu' => $this->renderer];
     }
 
-    public function supports(Resource $resource): bool
+    /** Gradients, the effects of layer() and glass(), scrolling, and a raycaster on the GPU: every Feature. */
+    public function has(Feature $feature): bool
     {
-        return in_array($resource, [Resource::FRAMEBUFFER, Resource::RASTERIZER, Resource::RAYCASTER, Resource::PAINTER], true);
+        return true;
     }
 
     /**
@@ -122,7 +119,7 @@ class OpenGLContext extends GraphicsEngine
      *
      * @throws OpenGLException When the grid's cells need a texture taller than the GPU holds.
      */
-    public function raycaster(Grid $grid): GERaycaster
+    public function raycaster(Grid $grid): OpenGLRaycaster
     {
         return new OpenGLRaycaster($this, new OpenGLCaster($this, $grid));
     }
@@ -133,64 +130,65 @@ class OpenGLContext extends GraphicsEngine
         return $this->maxSide;
     }
 
-    /** @throws GraphicsException When $onto is another engine's framebuffer. */
-    public function painter(GEFramebuffer $onto): GEPainter
-    {
-        if ($onto->engine() !== $this || ! $onto instanceof OpenGLFramebuffer) {
-            throw GraphicsException::foreignResource('opengl', $onto->engine()->name());
-        }
-
-        return new OpenGLGEPainter($this, $onto, new OpenGLPainter($this, $onto, recorder: is_null($this->recorder) ? null : ($this->recorder)()));
-    }
-
     /**
-     * An RGBA8 texture on the GPU, with a four-sample twin that antialiased shapes are drawn into.
-     *
-     * @throws GraphicsException When the size is below 1x1, or $format is not RGBA8: the only format it holds.
-     */
-    public function framebuffer(int $width, int $height, ?FormatSpec $format = null): GEFramebuffer
-    {
-        if ($width < 1 || $height < 1) {
-            throw GraphicsException::badSize($width, $height);
-        }
-        if (! is_null($format) && ! $format->equals(FormatSpec::rgba8())) {
-            throw OpenGLException::because('a framebuffer holds RGBA8 only.');
-        }
-
-        return new OpenGLFramebuffer($this, $width, $height);
-    }
-
-    /**
-     * A framebuffer the stage's size, shown on it. A stage that lends an NSView is shown in through a child
+     * A surface the stage's size, shown on it. A stage that lends an NSView is shown in through a child
      * NSOpenGLView of the engine's, when ext-appkit is loaded; otherwise as pixels, through the stage.
      *
      * @throws GraphicsException When the stage has no size yet.
+     * @throws OpenGLException When $format is not RGBA8: the only format it holds.
      */
-    public function attach(ActorStage $stage, ?FormatSpec $format = null): GEFramebuffer
+    public function surface(ActorStage $stage, ?FormatSpec $format = null): OpenGLSurface
     {
         [$width, $height] = $stage->pixelSize();
         if ($width < 1 || $height < 1) {
             throw GraphicsException::stageHasNoSize();
         }
-
-        /** @var OpenGLFramebuffer $framebuffer */
-        $framebuffer = $this->framebuffer($width, $height, $format)->onto($stage);
+        $shownIn = null;
         $view = $stage->nativeSurface();
         if ($view instanceof NSView && class_exists(\NSOpenGLContext::class, false)) {
             $this->surfaces ??= new WeakMap;
-            $surface = $this->surfaces[$view] ?? null;
-            if (is_null($surface)) {
-                $surface = OpenGLSurface::over($this, $view);
-                if (! is_null($surface)) {
-                    $this->surfaces[$view] = $surface;
+            $shownIn = $this->surfaces[$view] ?? null;
+            if (is_null($shownIn)) {
+                $shownIn = OpenGLView::over($this, $view);
+                if (! is_null($shownIn)) {
+                    $this->surfaces[$view] = $shownIn;
                 }
-            }
-            if (! is_null($surface)) {
-                $framebuffer->showIn($surface);
             }
         }
 
-        return $framebuffer;
+        return $this->make($width, $height, $format, $stage, $shownIn);
+    }
+
+    /**
+     * A surface with no stage: drawn into and read back, or drawn onto another as an image.
+     *
+     * @throws GraphicsException When a side is less than 1.
+     * @throws OpenGLException When $format is not RGBA8: the only format it holds.
+     */
+    public function offscreen(int $width, int $height, ?FormatSpec $format = null): OpenGLSurface
+    {
+        if ($width < 1 || $height < 1) {
+            throw GraphicsException::badSize($width, $height);
+        }
+
+        return $this->make($width, $height, $format, null, null);
+    }
+
+    /**
+     * An RGBA8 texture on the GPU, with a four-sample twin that antialiased shapes are drawn into, and its
+     * painter, as a surface.
+     *
+     * @throws OpenGLException
+     */
+    protected function make(int $width, int $height, ?FormatSpec $format, ?ActorStage $stage, ?OpenGLView $view): OpenGLSurface
+    {
+        if (! is_null($format) && ! $format->equals(FormatSpec::rgba8())) {
+            throw OpenGLException::because('a surface holds RGBA8 only.');
+        }
+        $framebuffer = new OpenGLFramebuffer($this, $width, $height);
+        $painter = new OpenGLPainter($this, $framebuffer, recorder: is_null($this->recorder) ? null : ($this->recorder)());
+
+        return new OpenGLSurface($this, $framebuffer, $painter, $stage, $view);
     }
 
     /** Takes away what it added to the views stages lent it. */
@@ -200,11 +198,6 @@ class OpenGLContext extends GraphicsEngine
             $surface->release();
         }
         $this->surfaces = new WeakMap;
-    }
-
-    public function rasterizer(Edges $edges = Edges::ANTIALIASED): GERasterizer
-    {
-        return new OpenGLRasterizer($this, $edges);
     }
 
     /**

@@ -6,13 +6,12 @@ use Surface\Contracts\Rendering\Framebuffers\DamageGranularity;
 use Surface\Contracts\Rendering\Framebuffers\FormatSpec;
 use Surface\Contracts\Rendering\Framebuffers\Region;
 use Surface\Contracts\Rendering\Painting\PaintTarget;
-use Surface\Graphics\GEFramebuffer;
 use Surface\NutsAndBolts\Color;
 
 /**
  * The opengl engine's framebuffer: an RGBA8 texture holding premultiplied colour, and a four-sample
- * twin (renderbuffers) that antialiased shapes are drawn into and resolved from. read() and write()
- * take straight colour, as every GEFramebuffer does: the GPU converts on the way out and in.
+ * twin (renderbuffers) that antialiased shapes are drawn into and resolved from. pixels() gives
+ * straight colour: the GPU converts on the way out.
  *
  * A write to the texture leaves the twin behind; it is filled from the texture again before the next
  * antialiased draw. Row 0 of the texture is the surface's top row (place.vert), so GL's window
@@ -21,7 +20,7 @@ use Surface\NutsAndBolts\Color;
  * A transient framebuffer (a layer's sheet) is only ever drawn from transparent black, in one pass at
  * a time: it holds its texture alone, and draws through the engine's scratch samples and stencil.
  */
-class OpenGLFramebuffer extends GEFramebuffer implements PaintTarget
+class OpenGLFramebuffer implements PaintTarget
 {
     /** Samples a pixel when edges are antialiased. */
     public const int SAMPLES = 4;
@@ -48,9 +47,6 @@ class OpenGLFramebuffer extends GEFramebuffer implements PaintTarget
     /** Whether the twin is behind the texture: written to since it was last filled. */
     protected bool $stale = false;
 
-    /** The surface over the view its stage lent, when it is shown in one. */
-    protected ?OpenGLSurface $surface = null;
-
     /**
      * Where the texture is behind the twin: drawn into with samples and not yet resolved. A resolve is a
      * pass of its own in GL, so it waits until something reads the texture (resolve()).
@@ -63,8 +59,6 @@ class OpenGLFramebuffer extends GEFramebuffer implements PaintTarget
         protected readonly int $height,
         protected readonly bool $transient = false,
     ) {
-        parent::__construct($device);
-
         $device->current();
         $this->texture = OpenGLContext::texture($width, $height);
         glGenFramebuffers(1, $framebuffers);
@@ -267,33 +261,6 @@ class OpenGLFramebuffer extends GEFramebuffer implements PaintTarget
         return pack('g4', $this->width, $this->height, $ox, $oy);
     }
 
-    /**
-     * Shows it in $surface from now on.
-     *
-     * @internal
-     */
-    public function showIn(OpenGLSurface $surface): static
-    {
-        $this->surface = $surface;
-
-        return $this;
-    }
-
-    /**
-     * In a surface over the view the stage lent, the GPU draws the texture into the view's back buffer and
-     * swaps it in: nothing comes back to the CPU. Otherwise as pixels, through the stage. On a paced stage
-     * this runs once a refresh.
-     */
-    protected function show(): void
-    {
-        if (is_null($this->surface)) {
-            parent::show();
-
-            return;
-        }
-        $this->surface->show($this);
-    }
-
     /** @internal The texture, resolved: what a draw from this framebuffer samples. */
     public function textureName(): int
     {
@@ -308,7 +275,14 @@ class OpenGLFramebuffer extends GEFramebuffer implements PaintTarget
         return $this->framebuffer;
     }
 
-    protected function readRgba8(Region $region): string
+    /** The device it is on: a framebuffer works only with that device's painters and casters. */
+    public function device(): OpenGLContext
+    {
+        return $this->device;
+    }
+
+    /** $region's pixels as straight RGBA8, rows from the top. Waits for what the GPU is drawing. */
+    public function pixels(Region $region): string
     {
         $this->device->current();
         $this->resolve();
@@ -316,18 +290,6 @@ class OpenGLFramebuffer extends GEFramebuffer implements PaintTarget
         glBindFramebuffer(GL_READ_FRAMEBUFFER, $this->stagingFramebuffer);
 
         return $this->device->readPixels($region);
-    }
-
-    protected function writeRgba8(string $rgba8, Region $region): void
-    {
-        $this->device->current();
-        $this->resolve();
-        $this->stagingFramebuffer();
-        glBindTexture(GL_TEXTURE_2D, $this->staging);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, $region->x, $region->y, $region->width, $region->height, GL_RGBA, GL_UNSIGNED_BYTE, $rgba8);
-        $this->convert('premultiply.frag', $this->staging, $this->framebuffer, $region);
-        $this->stale = true;
     }
 
     /**

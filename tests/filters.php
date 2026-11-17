@@ -3,7 +3,10 @@
  * G1: each filter step on the GPU (OpenGLFilters) against PHPLandFilters::run(), Velvet's reference, on the same
  * premultiplied pixels. Opens no window.
  *
- *   zhp tests/filters.php /path/to/venusian/topside
+ * Run inside an application with venusian-velvet installed, Velvet configured with Lustrous in PHP:
+ *
+ *   VELVET_FRAMEBUFFER=lustrous-php-full VELVET_RASTERIZER=lustrous-php VELVET_PAINTER=lustrous-php \\
+ *     zhp computer probe --execute 'require "/path/to/venusian-opengl/tests/filters.php";'
  *
  * Steps whose arithmetic is integer in Velvet (Gaussian blurs, flood, table, hash noise) must give Velvet's bytes:
  * compared as straight colour, through the same unpremultiply Velvet's run() ends with, so equal premultiplied
@@ -18,13 +21,9 @@ use Surface\Contracts\Rendering\Framebuffers\Region;
 use Surface\Contracts\Graphics\Effects\{Blend, BlendMode, Blur, BlurSampling, Channel, ColorMatrix, Composite, CompositeOperator, Displace, EdgeMode, Field, FieldKind, FilterChain, Flood, Noise, NoiseType, Table};
 use Surface\Contracts\Rendering\Framebuffers\FormatSpec;
 use Surface\NutsAndBolts\Color;
-use Surface\VelvetGE\Framebuffers\PHPLand\PHPLandFilters;
+use VelvetGE\Framebuffers\PHP\PHPLandFilters;
 
-$topside = $argv[1] ?? throw new RuntimeException('Give the path to venusian/topside.');
-$loader = require "{$topside}/vendor/autoload.php";
-$loader->addPsr4('Jovian\\Engines\\OpenGL\\', dirname(__DIR__).'/src');
-require "{$topside}/tests/Pest.php";
-require_once "{$topside}/tests/Fixtures/FakeManagers.php";
+(require base_path('vendor/autoload.php'))->addPsr4('Jovian\\Engines\\OpenGL\\', dirname(__DIR__).'/src');
 
 [$w, $h, $ox, $oy] = [37, 23, 5, 7];
 mt_srand(11);
@@ -33,7 +32,7 @@ for ($i = 0; $i < $w * $h; $i++) {
     $a = [0, 255, 255, 128, mt_rand(1, 254)][mt_rand(0, 4)];
     $image .= chr(intdiv(mt_rand(0, 255) * $a + 127, 255)).chr(intdiv(mt_rand(0, 255) * $a + 127, 255)).chr(intdiv(mt_rand(0, 255) * $a + 127, 255)).chr($a);
 }
-$map = framebuffers(['rendering.framebuffer.default' => 'native'])->driver()->full(FormatSpec::rgba8(), 20, 30);
+$map = app('velvet.framebuffers')->driver('lustrous-php')->full(FormatSpec::rgba8(), 20, 30);
 $mapBytes = '';
 for ($i = 0; $i < 600; $i++) {
     $mapBytes .= chr(mt_rand(0, 255)).chr(mt_rand(0, 255)).chr(mt_rand(0, 255)).chr(mt_rand(0, 255));
@@ -138,4 +137,4 @@ $check('displace by a named map both engines make exactly', FilterChain::of(new 
 $check('a chain of named results', FilterChain::of(new Blur($g, 3.0, 3.0, result: 'blurred'), ColorMatrix::saturate(1.6, 'blurred', 'vivid'), new Flood(Color::rgba(0, 0, 0, 0.5), result: 'dark'), new Composite('dark', CompositeOperator::IN, in: 'vivid', result: 'shadowed'), new Blend('shadowed', BlendMode::SCREEN, in: 'source')), 2);
 
 echo $bad === 0 ? "FILTERS-OK {$ok} checks\n" : "FILTERS-FAILED {$bad} of ".($ok + $bad)."\n";
-exit($bad === 0 ? 0 : 1);
+

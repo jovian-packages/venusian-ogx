@@ -21,7 +21,7 @@ use Surface\Contracts\Graphics\Effects\Noise;
 use Surface\Contracts\Graphics\Effects\NoiseType;
 use Surface\Contracts\Graphics\Effects\Table;
 use Surface\Contracts\Rendering\Framebuffers\Framebuffer;
-use Surface\VelvetGE\Framebuffers\PHPLand\PHPLandFilters;
+use VelvetGE\Framebuffers\PHP\PHPLandFilters;
 
 /**
  * Filter chains, glass captures and the glass pyramid on the GPU. Every image is an RGBA8 texture; each step is

@@ -16,7 +16,7 @@ class VenusianOpenGLServiceProvider extends ServiceProvider
     public function boot(): void
     {
         if (extension_loaded('opengl')) {
-            Gfx::manager()->extend('opengl', fn (Backend $backend) => new OpenGLContext($backend, recorder: fn () => Recorders::driver()->recorder()), Backend::GPU);
+            Gfx::extend('opengl', fn (Backend $backend) => new OpenGLContext($backend, recorder: fn () => Recorders::driver()->recorder()), Backend::GPU);
         }
     }
 }

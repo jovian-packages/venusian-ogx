@@ -6,7 +6,9 @@
  * float32 against double. Views are compared pixel by pixel, and a differing pixel is traced to
  * a wall line one pixel taller or shorter.
  *
- * Run: zhp tests/raycast.php <path to venusian/topside>
+ * Run inside an application with venusian-velvet installed:
+ *
+ *   zhp computer probe --execute 'require "/path/to/venusian-opengl/tests/raycast.php";'
  */
 
 use Jovian\Engines\OpenGL\OpenGLContext;
@@ -17,12 +19,25 @@ use Surface\Contracts\Rendering\Raycasting\Hits;
 use Surface\Contracts\Rendering\Raycasting\RaycastException;
 use Surface\Contracts\Rendering\Raycasting\Scenery;
 use Surface\Contracts\Rendering\Raycasting\Texture;
-use Surface\VelvetGE\Raycasting\MarcherRaycaster;
-use Surface\VelvetGE\Raycasting\PHPLandMarcher;
+use VelvetGE\Raycasting\MarcherRaycaster;
+use Jovian\Engines\Velvet\Lustrous\Raycasting\PHPLandMarcher;
+use Surface\Contracts\Graphics\CastsRays;
+use Surface\Contracts\Graphics\DrawingContext;
+use Surface\Contracts\Graphics\DrawingSurface;
+use Surface\Contracts\Graphics\Feature;
 
-$topside = $argv[1] ?? throw new RuntimeException('Give the path to venusian/topside.');
-$loader = require "{$topside}/vendor/autoload.php";
-$loader->addPsr4('Jovian\\Engines\\OpenGL\\', dirname(__DIR__).'/src');
+(require base_path('vendor/autoload.php'))->addPsr4('Jovian\\Engines\\OpenGL\\', dirname(__DIR__).'/src');
+
+/** $region of a surface's pixels, rows packed. */
+$read = function (DrawingSurface $surface, Region $region): string {
+    $all = $surface->read();
+    $rows = '';
+    for ($y = $region->y; $y < $region->bottom(); $y++) {
+        $rows .= substr($all, ($y * $surface->width() + $region->x) * 4, $region->width * 4);
+    }
+
+    return $rows;
+};
 
 [$ok, $bad] = [0, 0];
 $check = function (string $what, Closure $pass) use (&$ok, &$bad): void {
@@ -168,19 +183,19 @@ $mine = $opengl->raycaster($grid);
 $velvet = new MarcherRaycaster('native', new PHPLandMarcher($grid), $grid);
 $scenery = new Scenery([1 => 0x8899AAFF, 2 => 0xC0503CFF, 3 => $texture(32, 32)], 0x202430FF, 0x404040FF, 160);
 $camera = new Camera(16.5, 16.5, 0.6);
-$frame = $opengl->framebuffer(400, 300);
+$frame = $opengl->offscreen(400, 300);
 $where = new Region(30, 20, 320, 240);
-$check('paint() puts the view inside $where and leaves the rest', function () use ($mine, $frame, $where, $camera, $scenery): array {
-    $frame->clear(Surface\NutsAndBolts\Color::rgba(1, 2, 3, 1.0));
+$check('paint() puts the view inside $where and leaves the rest', function () use ($mine, $frame, $where, $camera, $scenery, $read): array {
+    $frame->render(fn (DrawingContext $g) => $g->clear(Surface\NutsAndBolts\Color::rgba(1, 2, 3, 1.0)));
     $mine->paint($camera, $scenery, $frame, $where);
     $view = $mine->view($camera, $where->width, $where->height, $scenery);
-    $inside = $frame->read($where);
-    $outside = $frame->read(new Region(0, 0, 400, 20));
+    $inside = $read($frame, $where);
+    $outside = $read($frame, new Region(0, 0, 400, 20));
 
     return [$inside === $view && $outside === str_repeat(pack('C4', 1, 2, 3, 255), 400 * 20), ''];
 });
-$check('the painted view matches Velvet\'s view', function () use ($frame, $where, $velvet, $camera, $scenery): array {
-    $a = $frame->read($where);
+$check('the painted view matches Velvet\'s view', function () use ($frame, $where, $velvet, $camera, $scenery, $read): array {
+    $a = $read($frame, $where);
     $b = $velvet->view($camera, $where->width, $where->height, $scenery);
     $differ = 0;
     for ($i = 0; $i < strlen($a); $i += 4) {
@@ -224,12 +239,11 @@ $check('casts() refuses what cast() refuses', function () use ($opengl): array {
 $check('a ray hitting a wall with no entry is refused, naming it, and nothing is drawn', function () use ($opengl): array {
     $grid = Grid::of([[1, 1, 1, 1, 1], [1, 0, 0, 0, 7], [1, 1, 1, 1, 1]]);
     $mine = $opengl->raycaster($grid);
-    $frame = $opengl->framebuffer(32, 16);
-    $frame->clear(Surface\NutsAndBolts\Color::rgba(9, 9, 9, 1.0));
+    $frame = $opengl->offscreen(32, 16)->render(fn (DrawingContext $g) => $g->clear(Surface\NutsAndBolts\Color::rgba(9, 9, 9, 1.0)));
     try {
         $mine->paint(new Camera(1.5, 1.5, 0.0), new Scenery([1 => 0xFFFFFFFF]), $frame);
     } catch (RaycastException $e) {
-        return [str_contains($e->getMessage(), '7') && $frame->read(new Region(0, 0, 32, 16)) === str_repeat(pack('C4', 9, 9, 9, 255), 32 * 16), $e->getMessage()];
+        return [str_contains($e->getMessage(), '7') && $frame->read() === str_repeat(pack('C4', 9, 9, 9, 255), 32 * 16), $e->getMessage()];
     }
 
     return [false, 'nothing thrown'];
@@ -250,7 +264,7 @@ $check('a grid wider than an image side is walked: the cells are a storage buffe
     return [! is_null($hit) && $hit->x === $reference->x && $hit->y === $reference->y && $hit->wall === $reference->wall && abs($hit->distance - $reference->distance) < 1e-3,
         is_null($hit) ? 'no hit' : "cell {$hit->x}, distance {$hit->distance} against {$reference->distance}"];
 });
-$check('supports(RAYCASTER)', fn () => [$opengl->supports(Surface\Contracts\Graphics\Resource::RAYCASTER), '']);
+$check('it casts rays: CastsRays, and has(RAY_CASTING)', fn () => [$opengl instanceof CastsRays && $opengl->has(Feature::RAY_CASTING), '']);
 
 echo "\n{$ok} ok, {$bad} failed\n";
-exit($bad === 0 ? 0 : 1);
+

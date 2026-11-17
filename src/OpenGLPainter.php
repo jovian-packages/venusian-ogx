@@ -13,7 +13,7 @@ use Surface\Contracts\Rendering\Recording\Recorder;
 use Surface\NutsAndBolts\GradientSpread;
 use Surface\Rendering\Painters\GlassGroups;
 use Surface\Rendering\Painters\Painter;
-use Surface\Rendering\Rasterization\Stroker;
+use Surface\Rendering\Stroker;
 
 /**
  * The opengl engine's painter. Recording, frame comparison and damage are the shared Painter's; this
@@ -223,7 +223,7 @@ class OpenGLPainter extends Painter
                     break;
                 case 'image':
                     [, $source, $placement, $opacity, $filter, $style, $clip] = $command;
-                    if (! $source instanceof OpenGLFramebuffer || $source->engine() !== $this->device) {
+                    if (! $source instanceof OpenGLFramebuffer || $source->device() !== $this->device) {
                         throw new DrawingException('The opengl painter draws an image from one of its own engine\'s framebuffers, got '.get_debug_type($source).'.');
                     }
                     if ($source === $this->target) {
