@@ -81,9 +81,9 @@ for ($x = 4.0; $x <= 96; $x += 4) {
     $x === 4.0 ? $wave->moveTo($x, $y) : $wave->lineTo($x, $y);
 }
 
-$check('it is the GPU backend only, with every feature, and casts rays', fn () => $opengl->name() === 'opengl'
+$check('it is the GPU backend only, with every feature but images, and casts rays', fn () => $opengl->name() === 'opengl'
     && $opengl->backend() === Backend::GPU && $opengl instanceof CastsRays
-    && array_filter(Feature::cases(), fn (Feature $f) => ! $opengl->has($f)) === []);
+    && array_values(array_filter(Feature::cases(), fn (Feature $f) => ! $opengl->has($f))) === [Feature::IMAGES]);
 $check('it refuses the CPU backend', function () {
     try {
         new OpenGLContext(Backend::CPU);

@@ -109,9 +109,10 @@ class OpenGLContext extends GfxDevice implements CastsRays
     }
 
     /** Gradients, the effects of layer() and glass(), scrolling, and a raycaster on the GPU: every Feature. */
+    /** Every feature but images: this engine's surfaces do not lend a decoder memory or upload it yet. */
     public function has(Feature $feature): bool
     {
-        return true;
+        return $feature !== Feature::IMAGES;
     }
 
     /**
